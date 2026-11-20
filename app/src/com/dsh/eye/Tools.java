@@ -47,6 +47,13 @@ final class Tools {
         Look lastLook();
         /** 这一轮已经 look 过几次（幂等：同一轮最多 2 次，第 3 次直接回"已看过"）。 */
         int looksThisTurn();
+        /**
+         * 看一眼手机**屏幕**（单张）。失败返回 null —— 没授权，或者这块屏幕不让录
+         * （银行/密码这类 `FLAG_SECURE` 界面投出来是黑的）。
+         */
+        default Look screen() { return null; }
+        /** 本轮刚看过的那张屏幕图（同样要**下一轮**当 user 图发出去）。 */
+        default Look lastScreen() { return null; }
         void newTurn();
         /** 工作区（`Download/DSH-Go/workspace/`）里的文件操作。 */
         String files(String action, String path, String text);
@@ -151,6 +158,24 @@ final class Tools {
             new String[][] {
                 { "seconds", "number", "抓几秒（1~5，默认 2.5）。要看清动作就 3~4；静态画面 1.5 就够" },
                 { "why", "string", "你为什么看（一句话，写给自己看，会进日志）" }
+            },
+            new String[0]));
+
+        /**
+         * 看屏幕。和 `look` 分开成两个工具（而不是给 `look` 加个 `target` 参数），
+         * 是因为**什么时候该看哪个**是模型要自己判断的事：
+         * 一个参数晃过去，它就会在"用户问我屏幕上这句什么意思"的时候去开相机。
+         */
+        arr.put(fn("look_screen",
+            "看一眼**手机屏幕**（不是摄像头）—— 拿回一张现在的屏幕截图。\n"
+            + "什么时候调：用户说「你看我屏幕上这个」「帮我看看这个界面」「这页写的什么」"
+            + "「这个报错怎么办」，或者他在分享屏幕、你手上却没有屏幕画面。\n"
+            + "**不用调**：用户问的是他眼前/身边是什么（那是 look）；纯聊天。\n"
+            + "成本：一张约 150~200 token；不用开相机，也不会打断正在放的声音。\n"
+            + "返回值只有 {tokens,why}，画面会作为**你的下一条消息的附图**出现 —— "
+            + "调完直接看下一轮给到的图，别解释「我正在看」。",
+            new String[][] {
+                { "why", "string", "你为什么看屏幕（一句话，写给自己看，会进日志）" }
             },
             new String[0]));
 
@@ -260,6 +285,7 @@ final class Tools {
         String out;
         try {
             if ("look".equals(name)) out = look(a, env);
+            else if ("look_screen".equals(name)) out = lookScreen(a, env);
             else if ("tune".equals(name)) out = env.tune(a);
             else if ("memory_read".equals(name)) out = memRead(a, env);
             else if ("memory_write".equals(name)) out = memWrite(a, env);
@@ -294,6 +320,32 @@ final class Tools {
             return o.toString();
         } catch (Throwable e) {
             return "{\"frames\":" + l.frames + ",\"tokens\":" + l.tokens + "}";
+        }
+    }
+
+    /**
+     * 看屏幕。**故意不读 `why` 之外的参数**：截哪一块、多清楚，现在都交给
+     * `Screen` 那个帧源（720 宽、5fps、缩放到宫格大小），模型没有可调的东西。
+     * P2 若做「局部放大」，参数加在这里。
+     */
+    private static String lookScreen(JSONObject a, Env env) {
+        // 和 look 共用"一轮最多看两次"的闸：它俩烧的是同一种钱（一张图）
+        if (env.looksThisTurn() >= 2) {
+            return "{\"note\":\"这一轮已经看过 2 次了，别再看 —— 用已经拿到的画面回答。\"}";
+        }
+        Look l = env.screen();
+        if (l == null || l.jpeg == null) {
+            return err("抓不到屏幕（还没授权，或者这块屏幕不让录）。"
+                + "先让用户点一下「一起看屏幕」，或者让他把当前页面切到能录的界面。");
+        }
+        try {
+            JSONObject o = new JSONObject();
+            o.put("tokens", l.tokens);
+            o.put("why", a.optString("why", "screen"));
+            o.put("note", "屏幕画面在下一条消息里。看清楚再回答。");
+            return o.toString();
+        } catch (Throwable e) {
+            return "{\"tokens\":" + l.tokens + "}";
         }
     }
 

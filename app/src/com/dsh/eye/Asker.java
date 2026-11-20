@@ -112,6 +112,9 @@ final class Asker {
         + "关于画面：你不是实时看着他，你只能在自己调用 `look` 的时候拿到一张图 —— "
         + "里面按时间先后拼着这一段的几个瞬间。**这一轮没有 look 过，就不要描述任何画面** —— "
         + "拿脑子里的旧画面编细节比说「我没看到」糟糕得多。\n"
+        + "**还有 `look_screen`：看的是手机屏幕本身**（聊天、网页、视频、游戏、报错）。"
+        + "用户说「你看这个」「这页写的什么」「这个报错怎么办」而你在说屏幕上的事，就用它；"
+        + "他说的是眼前/身边的东西，用 `look`。两个都调过就看最新那张，别混着描述。\n"
         + "**说画面就直接说「看到了什么、它是怎么变的」**：不要用「第几帧 / 第几格 / 编号」"
         + "这种说法 —— 用户看不到你在数哪一格。\n"
         + "宫格很小，字常常认不清。认不出就说认不出，然后调 `tune` 把档位调到 native，再 look 一次；"
@@ -424,6 +427,8 @@ final class Asker {
                 turn.put(asst);
 
                 Tools.Look looked = null;
+                /** 这一轮 `look_screen` 拿到的屏幕图（同样下一轮当 user 图发）。 */
+                Tools.Look lookedScreen = null;
                 /**
                  * 步骤条只在 Agent（含混合）出现。
                  *
@@ -471,6 +476,7 @@ final class Asker {
                     // 落盘"这一步做了什么 + 结果"：万一步数到顶/被停止，下一句"继续"能接上
                     if (cfg != null) ConvStore.taskAppend(cfg.convId(), c.name, c.args, result);
                     if ("look".equals(c.name)) looked = env.lastLook();
+                    if ("look_screen".equals(c.name)) lookedScreen = env.lastScreen();
                     boolean failed = result != null && result.startsWith("{\"error\"");
                     cb.onTool(c.name, failed ? "fail" : "ok", toolDone(c.name, result, cost));
                     if (stepBar) {
@@ -493,6 +499,10 @@ final class Asker {
                 if (looked != null && looked.jpeg != null) {
                     turn.put(userMessage("（这是你刚看到的画面，按时间先后拼成的一张图）",
                         java.util.Collections.singletonList(looked.jpeg), null, p));
+                }
+                if (lookedScreen != null && lookedScreen.jpeg != null) {
+                    turn.put(userMessage("（这是你刚看的手机屏幕，现在就是这样）",
+                        java.util.Collections.singletonList(lookedScreen.jpeg), null, p));
                 }
                 text = "继续。";
                 img = null;    // 第一轮那几张图已经发过了，别重复
@@ -1044,6 +1054,7 @@ final class Asker {
     /** 工具在跑时的那一行（"正在看一眼…"）。 */
     static String toolVerb(String name) {
         if ("look".equals(name)) return "正在看一眼…";
+        if ("look_screen".equals(name)) return "正在看你屏幕…";
         if ("tune".equals(name)) return "正在调档位…";
         if ("memory_read".equals(name)) return "正在翻记忆…";
         if ("memory_write".equals(name)) return "正在记一笔…";
@@ -1060,6 +1071,14 @@ final class Asker {
                 JSONObject o = new JSONObject(result);
                 if (o.has("error")) return "没看成：" + o.optString("error");
                 return "看了 " + o.optInt("frames", 0) + " 帧 · " + took;
+            } catch (Throwable ignored) { }
+            return "看完了 · " + took;
+        }
+        if ("look_screen".equals(name)) {
+            try {
+                JSONObject o = new JSONObject(result);
+                if (o.has("error")) return "没看成：" + o.optString("error");
+                return "看了你的屏幕 · " + took;
             } catch (Throwable ignored) { }
             return "看完了 · " + took;
         }

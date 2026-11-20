@@ -264,6 +264,17 @@ public class SettingsActivity extends AppActivity {
         row("refresh", "备份与迁移", "手机 ⇄ 电脑", null,
             new Runnable() { public void run() { portable(); } });
 
+        head("陪伴");
+        /**
+         * 陪看：把帧源从相机换成屏幕。
+         *
+         * 授权一次可以反复开关（`Screen` 把 grant 留着），换机器/重启 App 之后要重新点。
+         * 开着的时候状态栏会有系统那个"正在录制/镜像"的提示 —— 那是系统画的，抹不掉，
+         * 也不该抹：用户随时能看见"它在录"。
+         */
+        row("eye", "一起看屏幕", companionSub(), companionValue(),
+            new Runnable() { public void run() { companionTap(); } });
+
         head("关于");
         row("gear", "接口", apiSub(), shortModel() + " · " + (cfg.direct() ? "key 已填" : "还没填 key"),
             new Runnable() { public void run() { apiDialog(); } });
@@ -280,6 +291,33 @@ public class SettingsActivity extends AppActivity {
         });
         endGroups();
         footer();
+    }
+
+    // ------------------------------------------------------------ 一起看屏幕
+
+    private String companionSub() {
+        EyeService s = EyeService.peek();
+        if (s == null) return "服务没起来";
+        if (s.companionOn()) return "正看着；点一下停（下次要重新授权）";
+        if (s.screenGranted()) return "屏幕采集开着；点一下接管";
+        return "它就能跟你一起看视频、打游戏";
+    }
+
+    private String companionValue() {
+        EyeService s = EyeService.peek();
+        if (s == null) return "关";
+        if (s.companionOn()) return "看";
+        return s.screenGranted() ? "已开" : "未开";
+    }
+
+    private void companionTap() {
+        EyeService s = EyeService.peek();
+        if (s == null) { toast("服务还没起来，回 App 首页等一下"); return; }
+        if (s.companionOn()) { s.stopCompanion(); toast("不看屏幕了"); rebuild(); return; }
+        if (!s.screenGranted()) { startActivity(new Intent(this, GrantActivity.class)); return; }
+        boolean ok = s.startCompanion("screen");
+        toast(ok ? "开始看屏幕了 —— 画面不再从相机来" : "差一步：先在弹窗里点「开始录制」");
+        rebuild();
     }
 
     private String voiceLabel() { return Config.voiceDisplay(cfg.ttsVoice()); }

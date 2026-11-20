@@ -6,8 +6,10 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -369,6 +371,37 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
     private volatile boolean callActive;
     /** 相机是这一秒才开的（预热期内收到的都是黑帧，见 {@link CallCapture#WARMUP_MS}）。 */
     private volatile long callOpenedAt;
+
+    /**
+     * 这一通话的帧从哪来：`camera`（默认，通话页/悬浮球看世界）或 `screen`（一起看屏幕）。
+     *
+     * 只影响三处：开/关时借不借相机、发出去的那句提示词说的是"拍下的"还是"屏幕上的"、
+     * 以及 `/status` 里报给插件的 `companion`。管线、节奏、计费**一个字都不分叉** ——
+     * 它就是"换了个帧源"，不是第二套系统。
+     */
+    private volatile String callSource = "camera";
+
+    /** 屏幕帧源。授权一次（{@link #grantScreen}）之后反复 start/stop。 */
+    private final Screen screenSrc = new Screen();
+
+    /** 悬浮球。懒建：用户第一次点「一起看」才加窗，不用的人一行窗口都不会多。 */
+    private BubbleWindow bubble;
+
+    /** 用户点了「一起看」但还没授权 → 授权回来后自动接着开（不用再点一次）。 */
+    private volatile boolean screenWanted;
+
+    /** 单次 `look_screen` 刚刚拿到的那张（{@link Asker} 会把它挂到下一条 user 消息上）。 */
+    private volatile Tools.Look lastScreen;
+
+    /** 屏幕关掉就停陪伴：锁屏后还在"看"是隐私事故，也是白烧电。 */
+    private final BroadcastReceiver screenOff = new BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent i) {
+            if (Intent.ACTION_SCREEN_OFF.equals(i.getAction()) && companionOn()) {
+                EyeLog.w("screen", "屏幕熄灭，停陪伴");
+                stopCompanion();
+            }
+        }
+    };
     /**
      * 连续取帧窗口：最近"一个发送窗口"的连续帧（{@link CallCapture#FPS} 帧/秒）。
      *
@@ -387,11 +420,22 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
     private final CallStream stream = new CallStream();
 
     /** 通话页开/关时借用相机（预览是要一直有帧的）。 */
-    void callOpen() {
+    void callOpen() { callOpen("camera"); }
+
+    /**
+     * 开一通话。`source` = `camera`（借相机）或 `screen`（用屏幕帧源，相机完全不碰）。
+     *
+     * 两条路除了"帧从哪来"，后面一模一样：同一个 `capture`、同一条 `stream`、
+     * 同一个 `autoGapMs()` 节奏。这是有意的 —— 陪伴模式不是第二套系统。
+     */
+    void callOpen(String source) {
+        callSource = source == null ? "camera" : source;
         callActive = true;                 // 先立标记：ensureEngine 建引擎时直接按它选分辨率
-        camAcquire("call");
-        // 通话页的帧要拼成宫格喂模型，640 长边太小（一格只剩两百多像素，模型会说"糊"）
-        try { if (engine != null) engine.setResolution("medium"); } catch (Throwable ignored) { }
+        if (!"screen".equals(callSource)) {
+            camAcquire("call");
+            // 通话页的帧要拼成宫格喂模型，640 长边太小（一格只剩两百多像素，模型会说"糊"）
+            try { if (engine != null) engine.setResolution("medium"); } catch (Throwable ignored) { }
+        }
         autoWatch = cfg == null || cfg.autoWatch();   // 用记住的那个选择，别每次硬置 true
         lastAutoAt = System.currentTimeMillis();
         capture.reset();
@@ -412,9 +456,187 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
         autoWatch = false;
         capture.reset();
         stream.close();
-        // 回到会话页那种"偶尔看一眼"的用法，640 够用也省电
-        try { if (engine != null) engine.setResolution("low"); } catch (Throwable ignored) { }
-        camRelease();
+        if ("screen".equals(callSource)) {
+            screenSrc.stop();          // 屏幕模式本来就没借相机，别去 camRelease 把计数搞乱
+        } else {
+            // 回到会话页那种"偶尔看一眼"的用法，640 够用也省电
+            try { if (engine != null) engine.setResolution("low"); } catch (Throwable ignored) { }
+            camRelease();
+        }
+        callSource = "camera";
+    }
+
+    // ---------------------------------------------------------------- 一起看屏幕（陪伴）
+
+    boolean companionOn() { return callActive && "screen".equals(callSource); }
+
+    private final Screen.Sink screenSink = new Screen.Sink() {
+        @Override public void onScreenJpeg(byte[] jpg) { onScreenFrame(jpg); }
+        @Override public void onScreenBlocked() {
+            Ui u = uiSink;
+            if (u != null) u.onError("这块屏幕不让录（银行/密码这类界面），先切走再一起看。");
+        }
+    };
+
+    /**
+     * 屏幕来了一帧。
+     *
+     * 和 {@link #onJpeg} 的区别只有一处：**不更新 `/frame.jpg` 和 fps 计数** ——
+     * 那两个是"相机在看什么"的窗口，别让屏幕画面把它顶掉。别的原样走同一套。
+     */
+    private void onScreenFrame(byte[] jpg) {
+        if (jpg == null || jpg.length == 0) return;
+        try { sampleCallFrame(jpg); } catch (Throwable ignored) { }
+    }
+
+    /** 打开「一起看」。返回 false = 还没授权（已自动拉起系统弹窗，授权完会自己接着开）。 */
+    boolean startCompanion(String source) {
+        if (!screenSrc.hasGrant()) {
+            screenWanted = true;
+            bubbleShow();                    // 球先挂出来：授权完不用再找入口
+            bubbleState(BubbleWindow.WAITING);
+            try {
+                Intent i = new Intent(this, GrantActivity.class);
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(i);
+            } catch (Throwable e) {
+                EyeLog.w("screen", "拉不起授权页：" + e);
+                bubbleState(BubbleWindow.IDLE);
+                screenWanted = false;
+                return false;
+            }
+            return false;
+        }
+        screenWanted = false;
+        if (callActive && !"screen".equals(callSource)) callClose();   // 别和相机通话抢
+        if (!callActive) callOpen(source == null ? "screen" : source);
+        // 已经在产帧就复用，别把虚拟屏推倒重来（Android 14 上推倒就得重新授权）
+        if (!screenSrc.isRunning()) {
+            boolean ok = screenSrc.start(this, screenSrc.grantResult(), screenSrc.grantData(),
+                screenSink, CallCapture.FPS, 720);
+            if (!ok) {
+                EyeLog.w("screen", "开不了屏（授权可能被系统收回了）");
+                callClose();
+                bubbleState(BubbleWindow.IDLE);
+                return false;
+            }
+        }
+        bubbleShow();
+        bubbleState(BubbleWindow.WATCHING);
+        EyeLog.w("screen", "一起看：开了");
+        return true;
+    }
+
+    /** 关掉「一起看」。幂等。 */
+    void stopCompanion() {
+        boolean was = callActive && "screen".equals(callSource);
+        if (was) callClose();
+        else screenSrc.stop();       // 单次看图临时开的那段也收掉
+        screenWanted = false;
+        bubbleState(BubbleWindow.IDLE);
+        if (was) EyeLog.w("screen", "一起看：关了");
+    }
+
+    /** 系统授权弹窗回来了。 */
+    void grantScreen(int result, Intent data) {
+        if (result != android.app.Activity.RESULT_OK || data == null) {
+            EyeLog.w("screen", "用户没授权（result=" + result + "）");
+            screenWanted = false;
+            bubbleState(BubbleWindow.IDLE);
+            bubbleToast("没授权，看不了屏幕");
+            return;
+        }
+        boolean ok = screenSrc.start(this, result, data, screenSink, CallCapture.FPS, 720);
+        if (!ok) {
+            bubbleToast("授权没生效，再点一次试试");
+            bubbleState(BubbleWindow.IDLE);
+            return;
+        }
+        if (screenWanted) startCompanion("screen");
+        else bubbleState(BubbleWindow.IDLE);   // 只授权不马上开：球留在原地待命
+    }
+
+    /** 最近一张屏幕帧（`/screen.jpg` 用；没在产帧就 null）。 */
+    @Override public byte[] screenJpeg() {
+        byte[] j = screenSrc.latest();
+        if (j != null) return j;
+        // 有授权但还没产帧：临时开 3 秒抓一张（单次看图也走这条）
+        return grabScreenOnce();
+    }
+
+    @Override public boolean companion(boolean on) {
+        if (on) return startCompanion("screen");
+        stopCompanion();
+        return true;
+    }
+
+    /** 设置页要用：现在手里有没有一张「录屏授权」（可能还没开始看）。 */
+    boolean screenGranted() { return screenSrc.hasGrant(); }
+
+    /**
+     * 单次看一眼屏幕：**临时开 → 等一帧 → 停**。
+     *
+     * 停是为了还电。停留时间只等 3 秒：屏幕静止时 `acquireLatestImage` 也会因为
+     * 内容没变而反复回调（虚拟屏一直在刷新），所以正常 300ms 内就有帧。
+     */
+    private byte[] grabScreenOnce() {
+        // ⚠️ 这里**不自己 start**：Android 14 起 MediaProjection 的 token 不能跨 stop 复用，
+        //    想重新开只能再走一次系统弹窗 —— 那是 Activity 的事（GrantActivity），
+        //    在服务线程里拉不起来。所以没在采集就返回 null，让模型/调用方提示用户去授权。
+        if (!screenSrc.isRunning()) return null;
+        screenSrc.touch();
+        byte[] j = screenSrc.latest();
+        if (j != null) return j;
+        long deadline = System.currentTimeMillis() + 2000;
+        while (System.currentTimeMillis() < deadline) {
+            j = screenSrc.latest();
+            if (j != null) return j;
+            try { Thread.sleep(60); } catch (InterruptedException e) { return null; }
+        }
+        return null;
+    }
+
+    /** `look_screen` 工具的实现：单张，走 `look_screen` 自己的 token 记账。 */
+    @Override public Tools.Look screen() {
+        lookCount += 1;                     // 和 look 共用"一轮最多两次"的闸
+        byte[] jpg = grabScreenOnce();
+        if (jpg == null) return null;
+        Tools.Look l = new Tools.Look();
+        l.jpeg = jpg;
+        l.frames = 0;                       // 不是帧序列：别让模型说"第 1 帧"
+        l.tokens = tokensOfJpeg(jpg);
+        l.why = "screen";
+        lastScreen = l;
+        return l;
+    }
+
+    @Override public Tools.Look lastScreen() { return lastScreen; }
+
+    private void bubbleShow() {
+        if (bubble == null) {
+            bubble = new BubbleWindow(this, new BubbleWindow.Cb() {
+                @Override public void onToggle() {
+                    if (companionOn()) stopCompanion();
+                    else startCompanion("screen");
+                }
+                @Override public void onClose() {
+                    stopCompanion();
+                    if (bubble != null) bubble.hide();
+                }
+            });
+        }
+        bubble.show();
+    }
+
+    private void bubbleState(int s) {
+        if (bubble != null) bubble.setState(s);
+    }
+
+    /** 悬浮球上飘一句话（授权失败/屏幕不让录这种要立刻让人知道的）。 */
+    private void bubbleToast(String msg) {
+        Ui u = uiSink;
+        if (u != null) u.onError(msg);
+        else EyeLog.w("screen", msg);
     }
 
     /**
@@ -716,7 +938,22 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
         instance = this;
         BuildConfig.attach(this);   // 给 Portable 那种没有 Context 的静态工具读版本号
         running = true;
-        startForeground(NOTI_ID, buildNotification("就绪"));
+        /**
+         * 前台服务类型必须带上 `mediaProjection`，而且要**从第一次 startForeground 就带上**：
+         * Android 14 的 `MediaProjectionManagerService.start` 会检查「调用者 UID 有没有一个
+         * 类型包含 mediaProjection 的前台服务」，没有就直接
+         * `SecurityException: Media projections require a foreground service of type
+         * ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION`（实测 API 34 模拟器）。
+         *
+         * 不能等要录屏了再补一次 —— 补的那次也可能晚于 `getMediaProjection`。
+         */
+        if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(NOTI_ID, buildNotification("就绪"),
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                | android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
+        } else {
+            startForeground(NOTI_ID, buildNotification("就绪"));
+        }
 
         cfg = new Config(this);
         cfg.migrate();                        // 老版本存下的默认值升到 v4 口径（模型名 / 上下文轮数）
@@ -730,6 +967,11 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
         loadHistory();
         writeModeFile();      // 插件还在读它（见 MODE_FILE 的注释）
         startFilePoll();
+        try {
+            registerReceiver(screenOff, new IntentFilter(Intent.ACTION_SCREEN_OFF));
+        } catch (Throwable e) {
+            EyeLog.w("screen", "注册息屏广播失败：" + e);
+        }
         scheduleWake(this, 10 * 60 * 1000);
         ui.post(tick);
         EyeLog.w("svc", "onCreate pid=" + android.os.Process.myPid()
@@ -770,6 +1012,9 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
         try { sumQ.shutdownNow(); } catch (Throwable ignored) { }
         try { titleQ.shutdownNow(); } catch (Throwable ignored) { }
         try { filePoll.interrupt(); } catch (Throwable ignored) { }
+        try { unregisterReceiver(screenOff); } catch (Throwable ignored) { }
+        try { screenSrc.stop(); } catch (Throwable ignored) { }
+        try { if (bubble != null) bubble.hide(); } catch (Throwable ignored) { }
         try { http.stop(); } catch (Throwable ignored) { }
         try { if (engine != null) engine.stop(); } catch (Throwable ignored) { }
         try { speaker.stop(); } catch (Throwable ignored) { }
@@ -1289,12 +1534,19 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
          * 这么写的时候模型开口就是"第 4 帧里…"——用户要的是"看到了什么、怎么变的"
          * （电脑版 see-now 也是只给图 + 时间，从不提编号）。图上画不画编号是给**人**看的。
          */
+        /**
+         * 屏幕模式只换"这是什么"和"别乱调工具"：**别让它在看屏幕时去调 look**
+         * （那会去开相机、把两路画面搅在一起），也别让它调 look_screen
+         * （会把虚拟屏推倒重来，Android 14 上等于让它重新要一次授权）。
+         */
+        boolean scr = "screen".equals(callSource);
+        String what = scr ? "手机**屏幕**" : "手机摄像头";
+        String lookTip = scr ? "不要调用任何看图的工具。" : "不要调用 look 工具。";
         t.note = sheets.size() == 1
-            ? "这是手机摄像头**刚才这一会儿**拍下的一段连续画面（按时间先后拼成一张图）。"
-                + "直接看它，不要调用 look 工具。"
-            : "这是手机摄像头**刚才这几段时间**拍下的 " + sheets.size()
-                + " 段连续画面（各拼成一张图，按时间先后；几张之间也是先后顺序）。"
-                + "直接看它们回答，不要调用 look 工具。";
+            ? "这是" + what + "**刚才这一会儿**看到的画面（按时间先后拼成一张图）。" + lookTip
+            : "这是" + what + "**刚才这几段时间**看到的 " + sheets.size()
+                + " 段连续画面（各拼成一张图，按时间先后；几张之间也是先后顺序）。" + lookTip;
+        if (scr) t.note += "就当自己坐在旁边一起看。";
         send(t);
     }
 
@@ -1813,6 +2065,7 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
     @Override public void newTurn() {
         lookCount = 0;
         lastLook = null;
+        lastScreen = null;
     }
 
     @Override public int looksThisTurn() { return lookCount; }
@@ -2403,7 +2656,13 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
          .append(",\"sumLen\":").append(convSummary == null ? 0 : convSummary.length())
          .append(",\"memInject\":").append(cfg != null && cfg.memInject())
          .append(",\"memFiles\":").append(Memory.count())
-         .append(",\"memTokens\":").append(Conv.textTokens(Memory.block(cfg)));
+         .append(",\"memTokens\":").append(Conv.textTokens(Memory.block(cfg)))
+         /**
+          * 一起看屏幕：插件/脚本得知道"现在是不是在看屏幕" —— 用户看视频时
+          * 往 4444 打一条 `/ask` 会把节奏打断，它自己该躲开。
+          */
+         .append(",\"companion\":").append(companionOn())
+         .append(",\"screenGranted\":").append(screenSrc.hasGrant());
         b.append(",\"tts\":").append(ttsJson());
         String e = engine == null ? null : engine.lastError();
         if (e == null && http != null) e = http.lastError();
@@ -2544,6 +2803,7 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
             public void run() {
                 while (running) {
                     try { pollSayFile(); } catch (Throwable e) { /* 文件没了不是错误 */ }
+                    try { reapScreen(); } catch (Throwable ignored) { }
                     try { Thread.sleep(300); } catch (InterruptedException e) { return; }
                 }
             }
@@ -2551,6 +2811,19 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
         t.setDaemon(true);
         filePoll = t;
         t.start();
+    }
+
+    /**
+     * 闲置回收：单次看图把屏幕采集开起来之后，不用了要还回去（虚拟屏一直在合成画面）。
+     *
+     * 陪伴模式（`companionOn()`）不算闲置 —— 那是它的常态。
+     * 停了就等于放弃授权，下次用得重新点系统弹窗，所以阈值给得宽（2 分钟）。
+     */
+    private void reapScreen() {
+        if (!screenSrc.isRunning() || companionOn()) return;
+        if (screenSrc.idleMs() < 120000) return;
+        screenSrc.stop();
+        EyeLog.w("screen", "闲置 2 分钟，收掉屏幕采集");
     }
 
     private void pollSayFile() {

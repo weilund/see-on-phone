@@ -22,7 +22,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.dsh.eye"
     android:versionCode="260"
-    android:versionName="2.6.0">
+    android:versionName="2.7.0">
 
     <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="29" />
 
@@ -33,6 +33,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 14 起：要用 MediaProjection 就必须有一个 mediaProjection 类型的前台服务 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- 只是为了兼容老插件写 say.txt 的那条路；走 /say 接口时完全不需要它 -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
@@ -62,7 +64,18 @@
             </intent-filter>
         </activity>
 
-
+        <!--
+          只用来换「屏幕录制」授权：无界面、独立任务、不进最近任务。
+          用户从头到尾只看到系统那一个弹窗（GrantActivity 自己没有画面）。
+        -->
+        <activity
+            android:name=".GrantActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
 
         <!-- 通话页：会话页顶栏的 📹。实时预览 + 字幕，退出就还相机 -->
         <activity
@@ -91,7 +104,7 @@
         <service
             android:name=".EyeService"
             android:exported="false"
-            android:foregroundServiceType="camera" />
+            android:foregroundServiceType="camera|mediaProjection" />
 
         <receiver
             android:name=".BootReceiver"

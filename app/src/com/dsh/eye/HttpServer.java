@@ -98,6 +98,20 @@ final class HttpServer {
 
         /** `/look`：现场抓一张拼好的宫格，返回 JSON（图 base64）。 */
         default String lookSheet(double seconds) { return "{\"error\":\"not supported\"}"; }
+
+        /**
+         * `/screen.jpg`：**屏幕**当前那一帧。
+         *
+         * 和 `grabFrame()`（相机）分开：陪伴模式看的是屏幕，别让"相机在看什么"
+         * 那个窗口被屏幕画面顶掉。没授权 / 抓不到时返回 null。
+         */
+        default byte[] screenJpeg() { return null; }
+
+        /**
+         * `/companion?on=1`：开/关「一起看屏幕」。返回开成了没有
+         * （false = 还没授权，App 那边会自己拉起系统弹窗）。
+         */
+        default boolean companion(boolean on) { return false; }
     }
 
     private final Source src;
@@ -228,6 +242,36 @@ final class HttpServer {
             Frame f = src.grabFrame();
             if (f == null) { send(s, 503, "text/plain", "no frame yet".getBytes("UTF-8")); return; }
             send(s, 200, "image/jpeg", f.data);
+            return;
+        }
+        /**
+         * `/screen.jpg`：**屏幕**当前那一帧（和 `/frame.jpg` 的相机画面分开）。
+         *
+         * 没开陪伴也能要：会临时开一下虚拟屏、抓一张、关掉（≈300ms）。
+         * 没授权就 503 —— 提示里直接说去哪儿授权，别让人猜。
+         */
+        if (path.equals("/screen.jpg") || path.equals("/screen")) {
+            byte[] jpg = src.screenJpeg();
+            if (jpg == null) {
+                send(s, 503, "text/plain",
+                    "no screen frame — 先在 App 里点「一起看屏幕」，点一次系统授权弹窗".getBytes("UTF-8"));
+                return;
+            }
+            send(s, 200, "image/jpeg", jpg);
+            return;
+        }
+        /**
+         * `/companion?on=1` / `?on=0`：开/关「一起看屏幕」。
+         *
+         * 悬浮球、设置页、插件三条路走的是同一个开关 —— 只有一个真值来源。
+         */
+        if (path.equals("/companion")) {
+            String v = params.get("on");
+            boolean want = v == null
+                || "1".equals(v) || "on".equalsIgnoreCase(v) || "true".equalsIgnoreCase(v);
+            boolean ok = src.companion(want);
+            String r = "{\"on\":" + want + ",\"ok\":" + ok + "}";
+            send(s, 200, "application/json; charset=utf-8", r.getBytes("UTF-8"));
             return;
         }
         /**
