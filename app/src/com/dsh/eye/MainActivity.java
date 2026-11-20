@@ -1172,19 +1172,24 @@ public class MainActivity extends AppActivity implements EyeService.Ui, Bubbles.
         int tools = r == null ? c.lastTools() : Cost.countTools(r.steps);
         double turn = r == null ? c.lastCostUsd() : r.costUsd;
         boolean hasTurn = in > 0 || out > 0 || turn > 0;
+        // Go 的 usage.cost 是服务端实际扣费，直连没给只能估算 —— 界面要说清哪个是哪个
+        boolean real = r != null && r.serverCost >= 0;
         String turnLine = !hasTurn ? "本轮：还没发过请求"
             : "本轮：输入 " + fmtNum(in) + " · 输出 " + fmtNum(out)
-              + " · 工具 " + tools + " 次 → " + Cost.fmt(turn);
+              + " · 工具 " + tools + " 次 → " + Cost.fmt(turn)
+              + (real ? "（服务端计费）" : "（牌价估算）");
 
         String msg = "上下文：" + fmtNum(used) + " / " + fmtNum(budget)
             + "（" + pct + "%）\n"
             + turnLine + "\n"
             + "累计：" + Cost.fmt(c.costTotalUsd()) + "\n\n"
-            + "按牌价估算（参考 DSH Cost Meter 的 DeepSeek V4 价）：\n"
-            + "flash 输入 $0.15/M · 输出 $0.60/M；\n"
-            + "pro 输入 $0.66/M · 输出 $1.98/M；\n"
-            + "搜索/读网页 $0.00075/次。\n"
-            + "未计峰谷与缓存命中，实际通常更低。";
+            + (real
+                ? "本轮是服务端报的实际扣费（Go 的 usage.cost，含缓存折扣与峰谷）。\n"
+                : "按牌价估算（参考 DSH Cost Meter 的 DeepSeek V4 价）：\n"
+                  + "flash 输入 $0.15/M · 输出 $0.60/M；\n"
+                  + "pro 输入 $0.66/M · 输出 $1.98/M；\n"
+                  + "未计峰谷与缓存命中，实际通常更低。\n")
+            + "搜索/读网页 $0.00075/次（自己发起的调用，按次加）。";
 
         new android.app.AlertDialog.Builder(this)
             .setTitle("上下文与花费")

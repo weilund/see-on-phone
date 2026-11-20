@@ -81,5 +81,12 @@ final class Proto {
         boolean web;
         /** 本轮估算花费（美元，见 {@link Cost}）。 */
         double costUsd;
+        /**
+         * 服务端给的**真实花费**（美元），来自 `usage.cost`。
+         *
+         * <p>-1 = 服务端没给（DeepSeek 直连就是这样，只能按牌价估）。
+         * Go 给的是**含缓存折扣/峰谷**的实际扣费，比估算准。
+         */
+        double serverCost = -1;
     }
 }

@@ -649,6 +649,8 @@ final class Brain {
         long thinkMs;
         int promptTokens;
         int completionTokens;
+        /** 服务端报的真实花费（美元；-1 = 没给）。 */
+        double serverCost = -1;
     }
 
     /**
@@ -717,6 +719,8 @@ final class Brain {
         String finish;
         int promptTokens;
         int completionTokens;
+        /** 服务端报的真实花费（美元；-1 = 没给）。 */
+        double serverCost = -1;
         /** 这一段思考是什么时候开始的（0 = 当前不在思考）。 */
         long thinkFrom;
         long thinkMs;
@@ -830,6 +834,7 @@ final class Brain {
         out.thinkMs = acc.thinkMs;
         out.promptTokens = acc.promptTokens;
         out.completionTokens = acc.completionTokens;
+        out.serverCost = acc.serverCost;
     }
 
     /**
@@ -863,6 +868,9 @@ final class Brain {
         if (usage != null) {
             acc.promptTokens = usage.optInt("prompt_tokens", acc.promptTokens);
             acc.completionTokens = usage.optInt("completion_tokens", acc.completionTokens);
+            // Go 的 usage.cost 是这次请求的真实美元数（含缓存折扣/峰谷），比牌价估算准
+            double usd = usage.optDouble("cost", -1);
+            if (usd >= 0) acc.serverCost = usd;
         }
 
         JSONArray ch = o.optJSONArray("choices");
@@ -1095,6 +1103,8 @@ final class Brain {
             if (usage != null) {
                 out.promptTokens = usage.optInt("prompt_tokens", 0);
                 out.completionTokens = usage.optInt("completion_tokens", 0);
+                double usd = usage.optDouble("cost", -1);
+                if (usd >= 0) out.serverCost = usd;
             }
             JSONArray ch = o.optJSONArray("choices");
             if (ch == null || ch.length() == 0) return;

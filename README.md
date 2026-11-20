@@ -141,7 +141,9 @@ adb install -r see-on-phone-<ver>.apk
   （可以就是直连用的那个）；
 - Go 的 DeepSeek 模型需要在 Console 的 `Settings › Privacy › Regions` 选
   `Global`，不然请求会失败；
-- 花费按牌价估算，和实际账单可能有小差。
+- 花费：Go 的响应里带 `usage.cost`（真实美元扣费，含缓存折扣与峰谷），App 直接用它，
+  界面上会标「服务端计费」；直连没有这个字段，仍按牌价估算、标「牌价估算」，和实际账单可能有小差。
+  两种来源都另加 App 自己发起的搜索/读网页调用（`$0.00075/次`）。
 
 不想开 App 也能验一下端点通不通（**不需要 key**，只验那两个前置校验）：
 
@@ -150,6 +152,17 @@ node scripts/probe-opencode.mjs
 # 或者带 key 真打一次
 OPENCODE_GO_KEY=sk-... node scripts/probe-opencode.mjs
 ```
+
+想在电脑上直接把接口切过去（省得在手机上敲 key），App 的 HTTP 服务有 `/config`：
+
+```bash
+adb forward tcp:4444 tcp:4444
+curl "http://127.0.0.1:4444/config?base=https://opencode.ai/inference/go/openai/v1&model=deepseek-v4.1-flash&key=sk-...&searchbase=https://api.deepseek.com&searchkey=sk-..."
+curl "http://127.0.0.1:4444/status"      # 看当前 provider / 模型 / 花费
+```
+
+⚠️ 参数名**全小写**（`searchkey`、`searchbase`，不是 `searchKey`、`searchBase`）——
+查询串解析会把键名统一转小写，驼峰写法会被**静默忽略**（不报错，值不生效）。
 
 ### 自己编译
 

@@ -35,16 +35,39 @@ final class Cost {
 
     /** 本轮估算花费（美元）。 */
     static double of(String model, int promptTokens, int completionTokens, List<Proto.Step> steps) {
-        double in = FLASH_IN;
-        double out = FLASH_OUT;
-        String m = model == null ? "" : model.toLowerCase(Locale.ROOT);
-        if (m.contains("pro")) {
-            in = PRO_IN;
-            out = PRO_OUT;
+        return of(model, promptTokens, completionTokens, steps, -1);
+    }
+
+    /**
+     * 本轮花费：**服务端给了真实值就用它**，否则按牌价估。
+     *
+     * <p>两种来源的形状不一样，所以不能简单"有值就整个替换"：
+     * <ul>
+     *   <li>Go 的 `usage.cost` 已经含 token、缓存折扣、峰谷倍率 —— 但它**不知道**
+     *       App 侧为联网额外打的那次 `/v1/tools/search`（那是另一个服务商的账单）；</li>
+     *   <li>牌价估算覆盖 token + 工具，但没有折扣，通常略高。</li>
+     * </ul>
+     * 所以真实值只替换"token 那一块"，按次的工具费两种来源都照加。
+     *
+     * @param serverCost 服务端报的真实花费（美元）；**<0 表示没给**
+     */
+    static double of(String model, int promptTokens, int completionTokens,
+                     List<Proto.Step> steps, double serverCost) {
+        double usd;
+        if (serverCost >= 0 && !Double.isNaN(serverCost)) {
+            usd = serverCost;
+        } else {
+            double in = FLASH_IN;
+            double out = FLASH_OUT;
+            String m = model == null ? "" : model.toLowerCase(Locale.ROOT);
+            if (m.contains("pro")) {
+                in = PRO_IN;
+                out = PRO_OUT;
+            }
+            usd = Math.max(0, promptTokens) / 1_000_000.0 * in
+                + Math.max(0, completionTokens) / 1_000_000.0 * out;
         }
-        double usd = Math.max(0, promptTokens) / 1_000_000.0 * in
-            + Math.max(0, completionTokens) / 1_000_000.0 * out;
-        usd += countTools(steps) * SEARCH_CALL;   // fetch 同价，下面按类型分
+        usd += countTools(steps) * SEARCH_CALL;   // 服务端账单里不含我们自己发起的原子搜索
         return usd;
     }
 

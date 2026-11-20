@@ -381,7 +381,7 @@ final class Asker {
                         + " finish=" + (finish.length() == 0 ? "-" : finish)
                         + " took=" + (System.currentTimeMillis() - started) + "ms");
                     cb.onReply(reply(cfg, out, r.reasoning, thinkMs, p, stcJson, sr.annotations,
-                        title, steps, refused, false, promptTokens, completionTokens));
+                        title, steps, refused, false, promptTokens, completionTokens, sr.serverCost));
                     // 正常收尾 = 任务做完了，清掉续跑日志
                     if (cfg != null) ConvStore.taskClear(cfg.convId());
                     return;
@@ -393,7 +393,7 @@ final class Asker {
                     EyeLog.w("ask", "到了 " + p.maxRounds + " 轮上限，收尾");
                     cb.onReply(reply(cfg, out.length() > 0 ? out : "（看了几轮还没结论，再说一次？）",
                         r.reasoning, thinkMs, p, stcJson, sr.annotations, title, steps,
-                        isRefused(finish), false, promptTokens, completionTokens));
+                        isRefused(finish), false, promptTokens, completionTokens, sr.serverCost));
                     return;
                 }
 
@@ -661,7 +661,7 @@ final class Asker {
     static Proto.Reply reply(Config cfg, String text, String reasoning, long thinkMs, Caps.Plan p,
                              String stcJson, JSONArray annotations, String title,
                              List<Proto.Step> steps, boolean refused, boolean stopped,
-                             int promptTokens, int completionTokens) {
+                             int promptTokens, int completionTokens, double serverCost) {
         Proto.Reply r = new Proto.Reply();
         r.text = text == null ? "" : text;
         r.reasoning = reasoning == null ? "" : reasoning;
@@ -676,10 +676,11 @@ final class Asker {
         r.stopped = stopped;
         r.promptTokens = promptTokens;
         r.completionTokens = completionTokens;
+        r.serverCost = serverCost;
         r.web = p != null && p.kind == Caps.Plan.Kind.SERVER;
         // 花费：按牌价估算，并累加到全局总数（微美元落盘）
         r.costUsd = Cost.of(cfg == null ? null : cfg.apiModel(),
-            promptTokens, completionTokens, r.steps);
+            promptTokens, completionTokens, r.steps, serverCost);
         if (cfg != null) {
             cfg.addCostUsd(r.costUsd);
             cfg.setLastTurn(promptTokens, completionTokens,

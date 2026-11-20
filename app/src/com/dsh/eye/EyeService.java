@@ -1473,7 +1473,7 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
                         String body = partial == null ? "" : partial.trim();
                         String out = body.length() == 0 ? "（已停止）" : body + "\n\n（已停止）";
                         Proto.Reply stop = Asker.reply(cfg, out, null, 0, plan, null, null, null,
-                            null, false, true, 0, 0);
+                            null, false, true, 0, 0, -1);
                         java.util.List<String> files =
                             rememberTurn(pendingUser, out, null, 0, discardOr(shots), docs, stop);
                         lastLook = null;
@@ -1485,7 +1485,7 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
                     public void onText(String out, String reasoning, long thinkMs) {
                         // 老签名兜底（正常情况下走 onReply）
                         onReply(Asker.reply(cfg, out, reasoning, thinkMs, plan, null, null, null,
-                            null, false, false, 0, 0));
+                            null, false, false, 0, 0, -1));
                     }
 
                     /**
@@ -2308,8 +2308,9 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
         if (q.containsKey("base")) cfg.setBase(q.get("base"));
         if (q.containsKey("model")) cfg.setModel(q.get("model"));
         // Go 下联网搜索要另一组 DeepSeek 凭据，走 HTTP 配比在手机上打字快得多
-        if (q.containsKey("searchKey")) cfg.setSearchKey(q.get("searchKey"));
-        if (q.containsKey("searchBase")) cfg.setSearchBase(q.get("searchBase"));
+        // ⚠️ `HttpServer.parseQuery` 会把键名**全部转小写**，所以这里只能写全小写
+        if (q.containsKey("searchkey")) cfg.setSearchKey(q.get("searchkey"));
+        if (q.containsKey("searchbase")) cfg.setSearchBase(q.get("searchbase"));
         if (q.containsKey("think")) cfg.setThink(q.get("think"));
         applySettings();
         return cfg.describe();
