@@ -650,8 +650,8 @@ public class MainActivity extends AppActivity implements EyeService.Ui, Bubbles.
              * 会把 hybrid 当成纯 Agent 算，附件闸门就和真实请求不一致了。
              */
             Caps.Plan p = Caps.plan(m, c.think(), c.apiModel(),
-                bar.docCount() > 0, false, c.titleAuto(), c.allowDocsInWeb(), web);
-            bar.setDocGate(p.allowDocs, Caps.degradeHint(Caps.CAP_FILES));
+                bar.docCount() > 0, false, c.titleAuto(), c.allowDocsInWeb(), web, c.provider());
+            bar.setDocGate(p.allowDocs, Caps.degradeHint(Caps.CAP_FILES, c.provider()));
         } catch (Throwable e) {
             EyeLog.w("ui", "刷新附件闸失败 " + e);
         }
@@ -1134,7 +1134,9 @@ public class MainActivity extends AppActivity implements EyeService.Ui, Bubbles.
             int used = s != null ? s.contextTokens() : 0;
             int budget = c.ctxTokens();
             int pct = budget > 0 ? Math.round(used * 100f / budget) : 0;
-            return c.apiModel().replace("deepseek-", "")
+            // Go 下模型名前面标个 go·，不然 deepseek-v4.1-flash 和 flash 分不清走的是哪路
+            String m = c.apiModel().replace("deepseek-", "");
+            return (c.provider() == Hosts.Kind.OPENCODE_GO ? "go·" + m : m)
                 + " · " + pct + "% · " + Cost.fmtShort(c.costTotalUsd());
         } catch (Throwable e) {
             return "";

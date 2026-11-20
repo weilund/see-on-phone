@@ -1374,7 +1374,8 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
             hasUrl(t),
             true,
             cfg.allowDocsInWeb(),
-            webOn);
+            webOn,
+            cfg.provider());
         if (plan.blocked()) {
             // 模式闸（"联网 + 文档"这类）：**一个字节都不发**，直接给文案
             EyeLog.w("plan", "BLOCKED " + plan.toString());
@@ -2306,6 +2307,9 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
         if (q.containsKey("key")) cfg.setKey(q.get("key"));
         if (q.containsKey("base")) cfg.setBase(q.get("base"));
         if (q.containsKey("model")) cfg.setModel(q.get("model"));
+        // Go 下联网搜索要另一组 DeepSeek 凭据，走 HTTP 配比在手机上打字快得多
+        if (q.containsKey("searchKey")) cfg.setSearchKey(q.get("searchKey"));
+        if (q.containsKey("searchBase")) cfg.setSearchBase(q.get("searchBase"));
         if (q.containsKey("think")) cfg.setThink(q.get("think"));
         applySettings();
         return cfg.describe();

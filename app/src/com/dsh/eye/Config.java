@@ -27,6 +27,28 @@ final class Config {
     private static final String K_MODEL = "apiModel";
 
     /**
+     * **联网搜索专用**的端点与 key（只有 OpenCode Go 那条路会用到）。
+     *
+     * Go 不提供服务端搜索 / 读网页的原子接口，而 App 的联网能力（`web_search` /
+     * `read_url`）打的是 DeepSeek 官方 `/v1/tools/search`、`/v1/tools/fetch`。
+     * 所以"Go 聊天 + 开联网"时，搜索这一段仍然走 DeepSeek —— 需要第二组凭据。
+     *
+     * 空 = 回落：DeepSeek 端点下就是主 base/key（零配置）；Go 端点下没有可回落的
+     * key，联网会明确提示"还差一个搜索用的 DeepSeek key"，而不是静默失败。
+     */
+    private static final String K_SEARCH_BASE = "searchBase";
+    private static final String K_SEARCH_KEY = "searchKey";
+
+    /**
+     * OpenCode Go 的会话 id（`x-opencode-session` 的值）。
+     *
+     * Go 用这个**把同一个对话的请求路由到同一处**（前缀缓存 / 限流都按它算）。
+     * 优先用当前对话 id（`convId`），没有对话（首条消息还没建会话）时用一个
+     * **首次生成、之后固定的**随机 id —— 绝不能每请求随机一个，那等于放弃路由。
+     */
+    private static final String K_GO_SESS = "goSession";
+
+    /**
      * 思考档位：`auto`（自动）| `high`（高）| `max`（最高）| `off`（关）。默认 `auto`。
      *
      * 老值 `low` / `medium` 已在 {@link #migrate()} 里一次性归一，读的时候不信它们
@@ -119,6 +141,32 @@ final class Config {
      * `deepseek-chat` / `deepseek-reasoner` 已于 2026-07-24 弃用，同样在迁移里换掉。
      */
     static final String DEFAULT_MODEL = "deepseek-flash";
+
+    /**
+     * OpenCode Go 的端点（官方模型元数据里 `api.chat-completions.base_url` 的原值）。
+     *
+     * 注意路径里带 `/go/`：Go 的模型分族走不同上游，这个前缀就是端点选择器。
+     * 旧域名 `https://opencode.ai/zen/go/v1` 也认，但设置页只该露出这个。
+     */
+    static final String GO_BASE = "https://opencode.ai/inference/go/openai/v1";
+    /**
+     * Go 下的默认模型：`deepseek-v4.1-flash`。
+     *
+     * 1M 上下文、支持看图（jpg/png/gif/webp）、支持 `reasoning_effort`，
+     * 价格与 DeepSeek 的 flash 档一致（$0.15 / $0.60 每百万 token）。
+     * `deepseek-v4-pro` 在 Go 上**没有**视觉，能力位由 {@link Caps} 收窄。
+     */
+    static final String GO_MODEL = "deepseek-v4.1-flash";
+
+    /**
+     * 请求头 `User-Agent`。Go 的文档明确要求客户端报自己的名字（别用通用 SDK 名），
+     * 这既是对端点的礼貌，也是他们排查问题时唯一的线索。
+     *
+     * ⚠️ 这里没有读 `BuildConfig.version()`：`Brain` 是纯静态工具，拿不到 context。
+     * 发版时跟着 `AndroidManifest.xml` 的 versionName 一起改（两处，注释互相提醒）。
+     */
+    static final String UA = "SeeOnPhone/2.6.0 (+https://github.com/weilund/see-on-phone)";
+
     static final String DEFAULT_VOICE = "";
 
     /**
@@ -227,6 +275,44 @@ final class Config {
     String apiModel() { return or(sp.getString(K_MODEL, DEFAULT_MODEL), DEFAULT_MODEL); }
 
     void setKey(String v) { sp.edit().putString(K_KEY, v == null ? "" : v.trim()).apply(); }
+
+    /** 搜索专用端点。空 = 回落（DeepSeek 下是主 base，Go 下也是 DeepSeek 官方）。 */
+    String searchBase() {
+        String v = sp.getString(K_SEARCH_BASE, "");
+        if (v != null && v.trim().length() > 0) return v.trim();
+        // Go 下主 base 是 opencode.ai，搜索打不了那儿，回落 DeepSeek 官方
+        return Hosts.go(apiBase()) ? DEFAULT_BASE : apiBase();
+    }
+
+    /**
+     * 搜索专用 key。空 = 回落主 key；**Go 下没有可回落的主 key**（那把 key 只对
+     * opencode.ai 有效），所以返回空串，让联网入口给出"还没填搜索 key"的明确提示。
+     */
+    String searchKey() {
+        String v = sp.getString(K_SEARCH_KEY, "");
+        if (v != null && v.trim().length() > 0) return v.trim();
+        return Hosts.go(apiBase()) ? "" : apiKey();
+    }
+
+    void setSearchBase(String v) { sp.edit().putString(K_SEARCH_BASE, v == null ? "" : v.trim()).apply(); }
+    void setSearchKey(String v) { sp.edit().putString(K_SEARCH_KEY, v == null ? "" : v.trim()).apply(); }
+
+    /**
+     * 本轮请求的 `x-opencode-session` 值。**同一个对话必须稳定**。
+     *
+     * @param conv 当前对话 id（没有传空）
+     */
+    String goSession(String conv) {
+        if (conv != null && conv.trim().length() > 0) return conv.trim();
+        String v = sp.getString(K_GO_SESS, "");
+        if (v != null && v.trim().length() > 0) return v.trim();
+        String id = "sop-" + Long.toHexString(System.currentTimeMillis());
+        sp.edit().putString(K_GO_SESS, id).apply();
+        return id;
+    }
+
+    /** 当前端点属于哪个服务商（请求头 / 请求体 / 能力位都从这里分叉）。 */
+    Hosts.Kind provider() { return Hosts.of(apiBase()); }
     void setBase(String v) { sp.edit().putString(K_BASE, v == null ? "" : v.trim()).apply(); }
     void setModel(String v) { sp.edit().putString(K_MODEL, v == null ? "" : v.trim()).apply(); }
 
@@ -770,8 +856,15 @@ final class Config {
         if (key.length() == 0) masked = "(空)";
         else if (key.length() <= 10) masked = "***";
         else masked = key.substring(0, 6) + "…" + key.substring(key.length() - 4);
+        Hosts.Kind prov = provider();
+        String skey = searchKey();
+        String smasked = skey.length() == 0 ? "(空)"
+            : (skey.length() <= 10 ? "***" : skey.substring(0, 6) + "…" + skey.substring(skey.length() - 4));
         return "key=" + masked
             + "\nbase=" + apiBase()
+            + "\nprovider=" + Hosts.key(prov) + "（" + Hosts.label(prov) + "）"
+            + "\nsearchBase=" + searchBase()
+            + "\nsearchKey=" + smasked
             + "\nmodel=" + apiModel()
             + "\nthink=" + think()
             + "\nctx=" + ctxLabel(ctxTokens()) + " tok（上限）"

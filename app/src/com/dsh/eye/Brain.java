@@ -137,11 +137,11 @@ final class Brain {
         aborting = false;
         boolean on = thinkingOf(think);
         JSONObject body = assemble(cfg.apiModel(), maxTokens, messages, false,
-            on, effortOf(think), !on, tools, false);
+            on, effortOf(think), !on, tools, false, Hosts.of(cfg.apiBase()));
         EyeLog.w("brain", "chat think=" + think + " msgs=" + messages.length()
             + " tools=" + (tools == null ? 0 : tools.length())
             + " max=" + maxTokens + " chars=" + body.toString().length());
-        String raw = post(cfg.apiBase(), cfg.apiKey(), body.toString(),
+        String raw = post(cfg, cfg.apiBase(), cfg.apiKey(), body.toString(),
             // 大上下文要等更久：1M token 的输入光服务端预填就要几十秒。
             // 只在请求变大时**放宽**，绝不放宽普通过程的设置值。
             10_000, Math.max(readTimeoutMs, 20_000 + body.toString().length() / 30));
@@ -157,9 +157,9 @@ final class Brain {
             throws Exception {
         Caps.Plan p = plan != null ? plan
             : Caps.plan(Caps.Mode.CHAT, cfg.think(), cfg.apiModel(),
-                false, false, true, cfg.allowDocsInWeb(), cfg.web());
+                false, false, true, cfg.allowDocsInWeb(), cfg.web(), cfg.provider());
         return assemble(cfg.apiModel(), cfg.maxTokens(), messages, stream,
-            p.thinking, p.effort, p.sendTemperature, toolsOf(p), p.title);
+            p.thinking, p.effort, p.sendTemperature, toolsOf(p), p.title, p.provider);
     }
 
     /**
@@ -193,21 +193,61 @@ final class Brain {
                                        boolean stream, boolean thinking, String effort,
                                        boolean sendTemperature, JSONArray tools, boolean title)
             throws Exception {
+        return assemble(model, maxTokens, messages, stream, thinking, effort,
+            sendTemperature, tools, title, Hosts.Kind.DEEPSEEK);
+    }
+
+    /**
+     * 拼请求体（**带服务商**）。所有写入 `thinking / reasoning_effort / temperature /
+     * tools / title` 的地方都在这一个方法里 —— 别在别处再拼一次。
+     *
+     * ## Go 与 DeepSeek 的字段差异
+     *
+     * | 字段 | DeepSeek | OpenCode Go |
+     * |---|---|---|
+     * | `thinking:{type}` | ✔ 必须显式写 | ✘ 不认识，写了也白写 |
+     * | `reasoning_effort` | high / max | high / max / low；**关思考 = `none`** |
+     * | `title` / `deepseek_*` 工具 | ✔ | ✘ |
+     * | `stream_options.include_usage` | 可省 | 需要（流式才带 usage 与 cost） |
+     *
+     * Go 的思考"关"只能靠 `reasoning_effort:"none"` 表达（它没有 `thinking` 开关，
+     * OpenAI 兼容字段里 `none` 就是官方语义）。发 `none` 若被端点拒绝（400），
+     * 上层会走正常错误文案，不会静默把思考开着。
+     */
+    private static JSONObject assemble(String model, int maxTokens, JSONArray messages,
+                                       boolean stream, boolean thinking, String effort,
+                                       boolean sendTemperature, JSONArray tools, boolean title,
+                                       Hosts.Kind prov)
+            throws Exception {
+        final boolean go = prov == Hosts.Kind.OPENCODE_GO;
         JSONObject b = new JSONObject();
         b.put("model", model);
         b.put("max_tokens", maxTokens);
         b.put("messages", messages == null ? new JSONArray() : messages);
         b.put("stream", stream);
 
-        // thinking 恒发：不写这个键在不同端点上默认值不一样，
-        // 写死成 enabled/disabled 才能让"关掉思考"真的关掉。
-        JSONObject th = new JSONObject();
-        th.put("type", thinking ? "enabled" : "disabled");
-        b.put("thinking", th);
-        // auto / off 都**不写**这个键：关思考还带 effort 是官方没定义的组合，不发最安全
-        if (effort != null && effort.length() > 0) b.put("reasoning_effort", effort);
+        if (go) {
+            // Go 没有 thinking 开关：开 = 写 effort（auto 不写），关 = 显式 "none"
+            if (thinking) {
+                if (effort != null && effort.length() > 0) b.put("reasoning_effort", effort);
+            } else {
+                b.put("reasoning_effort", "none");
+            }
+        } else {
+            // thinking 恒发：不写这个键在不同端点上默认值不一样，
+            // 写死成 enabled/disabled 才能让"关掉思考"真的关掉。
+            JSONObject th = new JSONObject();
+            th.put("type", thinking ? "enabled" : "disabled");
+            b.put("thinking", th);
+            // auto / off 都**不写**这个键：关思考还带 effort 是官方没定义的组合，不发最安全
+            if (effort != null && effort.length() > 0) b.put("reasoning_effort", effort);
+        }
         // 思考开着时 temperature 无效（官方明说），所以只在关思考时发
         if (sendTemperature) b.put("temperature", 0.3);
+        // Go 的流式默认不带 usage；开了才有 token 数与 usage.cost（花费卡要用）
+        if (go && stream) {
+            b.put("stream_options", new JSONObject().put("include_usage", true));
+        }
 
         if (tools != null && tools.length() > 0) b.put("tools", tools);
         // title 只可能来自联网模式（与 function tools 互斥，闸在 Caps.plan）
@@ -267,12 +307,16 @@ final class Brain {
         if (q.length() > 200) q = q.substring(0, 200);
         if (cfg == null) return "{\"error\":\"没有配置，搜不了\"}";
         if (q.length() == 0) return "{\"error\":\"没给搜索词\"}";
+        // Go 端点下搜索走 DeepSeek 官方，用的是设置里第二组 key；没填要说清楚缺什么
+        if (cfg.searchKey().length() == 0) {
+            return "{\"error\":\"还没填搜索用的 DeepSeek key（设置 › 接口 › 联网搜索）\"}";
+        }
         long t0 = System.currentTimeMillis();
         try {
             JSONObject req = new JSONObject();
             req.put("query", q);
-            String raw = postUrl(trimSlash(cfg.apiBase()) + "/v1/tools/search",
-                cfg.apiKey(), req.toString(), 10_000, 25_000);
+            String raw = postUrl(trimSlash(cfg.searchBase()) + "/v1/tools/search",
+                cfg.searchKey(), req.toString(), 10_000, 25_000, cfg);
             JSONObject o = new JSONObject(raw);
             JSONArray rs = o.optJSONArray("results");
             if (rs == null || rs.length() == 0) {
@@ -339,12 +383,15 @@ final class Brain {
         if (!(u.startsWith("http://") || u.startsWith("https://"))) {
             return "{\"error\":\"只支持 http/https 链接\"}";
         }
+        if (cfg.searchKey().length() == 0) {
+            return "{\"error\":\"还没填搜索用的 DeepSeek key（设置 › 接口 › 联网搜索）\"}";
+        }
         long t0 = System.currentTimeMillis();
         try {
             JSONObject req = new JSONObject();
             req.put("url", u);
-            String raw = postUrl(trimSlash(cfg.apiBase()) + "/v1/tools/fetch",
-                cfg.apiKey(), req.toString(), 10_000, 30_000);
+            String raw = postUrl(trimSlash(cfg.searchBase()) + "/v1/tools/fetch",
+                cfg.searchKey(), req.toString(), 10_000, 30_000, cfg);
             JSONObject o = new JSONObject(raw);
             String content = o.optString("content", "").trim();
             if (content.length() == 0) return "{\"error\":\"这一页没有正文\"}";
@@ -448,21 +495,50 @@ final class Brain {
                             JSONArray tools, boolean stream) throws Exception {
         boolean on = thinkingOf(think);
         return assemble(model, maxTokens, messages, stream,
-            on, effortOf(think), !on, tools, false);
+            on, effortOf(think), !on, tools, false, Hosts.Kind.DEEPSEEK);
     }
 
-    private static String post(String base, String key, String body) throws Exception {
-        return post(base, key, body, 10_000, readTimeoutMs);
+    private static String post(Config cfg, String base, String key, String body) throws Exception {
+        return post(cfg, base, key, body, 10_000, readTimeoutMs);
     }
 
-    private static String post(String base, String key, String body, int timeoutMs)
+    private static String post(Config cfg, String base, String key, String body, int timeoutMs)
             throws Exception {
-        return post(base, key, body, 10_000, timeoutMs);
+        return post(cfg, base, key, body, 10_000, timeoutMs);
     }
 
-    private static String post(String base, String key, String body, int connectMs, int readMs)
+    private static String post(Config cfg, String base, String key, String body, int connectMs, int readMs)
             throws Exception {
-        return postUrl(trimSlash(base) + "/chat/completions", key, body, connectMs, readMs);
+        return postUrl(trimSlash(base) + "/chat/completions", key, body, connectMs, readMs, cfg);
+    }
+
+    /**
+     * **所有 HTTP 请求头只在这里设置**（流式 / 非流式 / 搜索 / 读网页共用）。
+     *
+     * ## OpenCode Go 的硬要求
+     *
+     * 缺 `x-opencode-session` 时 Go 直接 `400 MissingSessionID`（实测，不是警告）；
+     * 只有 `Authorization` 会被判 `401`。所以这两个头必须**成对**出现。
+     * 文档还要求客户端报自己的 `User-Agent`（别用通用 SDK 名字）——
+     * 这既是礼貌，也是他们排查问题唯一的线索。
+     *
+     * ## 按 URL 判 host，而不是按 cfg.apiBase()
+     *
+     * Go 聊天打 opencode.ai，但**联网搜索/读网页**打的是 DeepSeek 官方
+     * （`/v1/tools/search`，见 {@link #search}）。同一个 cfg 两个 host，
+     * 所以这里用**实际要打的 URL** 判断要不要加 Go 的头。
+     *
+     * @param accept `application/json`（非流式）或 `text/event-stream`（流式）
+     */
+    private static void headers(HttpURLConnection c, String url, String key, String accept,
+                                Config cfg) {
+        c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        c.setRequestProperty("Accept", accept);
+        c.setRequestProperty("User-Agent", Config.UA);
+        c.setRequestProperty("Authorization", "Bearer " + key);
+        if (cfg != null && Hosts.go(url)) {
+            c.setRequestProperty("x-opencode-session", cfg.goSession(cfg.convId()));
+        }
     }
 
     /**
@@ -473,6 +549,11 @@ final class Brain {
      */
     private static String postUrl(String url, String key, String body, int connectMs, int readMs)
             throws Exception {
+        return postUrl(url, key, body, connectMs, readMs, null);
+    }
+
+    private static String postUrl(String url, String key, String body, int connectMs, int readMs,
+                                  Config cfg) throws Exception {
         HttpURLConnection c = null;
         try {
             c = (HttpURLConnection) new URL(url).openConnection();
@@ -481,9 +562,7 @@ final class Brain {
             c.setConnectTimeout(Math.max(1_000, connectMs));
             c.setReadTimeout(Math.max(1_000, readMs));
             c.setDoOutput(true);
-            c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-            c.setRequestProperty("Authorization", "Bearer " + key);
-            c.setRequestProperty("Accept", "application/json");
+            headers(c, url, key, "application/json", cfg);
             OutputStream out = c.getOutputStream();
             out.write(body.getBytes("UTF-8"));
             out.close();
@@ -619,7 +698,7 @@ final class Brain {
         aborting = false;
         boolean on = thinkingOf(think);
         JSONObject body = assemble(cfg.apiModel(), maxTokens, messages, true,
-            on, effortOf(think), !on, tools, false);
+            on, effortOf(think), !on, tools, false, Hosts.of(cfg.apiBase()));
         EyeLog.w("brain", "stream(legacy) think=" + think + " msgs=" + messages.length()
             + " tools=" + (tools == null ? 0 : tools.length())
             + " chars=" + body.toString().length());
@@ -659,9 +738,7 @@ final class Brain {
             c.setConnectTimeout(15_000);
             c.setReadTimeout(Math.max(readTimeoutMs, 20_000 + body.toString().length() / 30));
             c.setDoOutput(true);
-            c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-            c.setRequestProperty("Authorization", "Bearer " + cfg.apiKey());
-            c.setRequestProperty("Accept", "text/event-stream");
+            headers(c, url, cfg.apiKey(), "text/event-stream", cfg);
             OutputStream o = c.getOutputStream();
             o.write(body.toString().getBytes("UTF-8"));
             o.close();
@@ -722,7 +799,7 @@ final class Brain {
                 EyeLog.w("brain", "流式失败，退回整包: " + e);
                 JSONObject ns = new JSONObject(body.toString());
                 ns.put("stream", false);
-                String raw = post(cfg.apiBase(), cfg.apiKey(), ns.toString());
+                String raw = post(cfg, cfg.apiBase(), cfg.apiKey(), ns.toString());
                 out.fellBack = true;
                 out.resp = parse(raw);
                 absorbNonStream(out, raw);
@@ -1154,8 +1231,8 @@ final class Brain {
                 .put("content", "问：" + qq + "\n答：" + aa));
             // thinking=disabled + temperature（思考开着 temperature 无效，这条要它生效）
             JSONObject body = assemble(cfg.apiModel(), 24, msgs, false,
-                false, null, true, null, false);
-            String resp = post(cfg.apiBase(), cfg.apiKey(), body.toString(), 3_000, 3_000);
+                false, null, true, null, false, Hosts.of(cfg.apiBase()));
+            String resp = post(cfg, cfg.apiBase(), cfg.apiKey(), body.toString(), 3_000, 3_000);
             Resp r = parse(resp);
             return clean(r.text);
         } catch (Throwable e) {
@@ -1198,8 +1275,8 @@ final class Brain {
             msgs.put(new JSONObject().put("role", "system").put("content", sys));
             msgs.put(new JSONObject().put("role", "user").put("content", oldText));
             JSONObject body = assemble(cfg.apiModel(), Math.max(300, maxChars * 2), msgs, false,
-                false, null, true, null, false);
-            String resp = post(cfg.apiBase(), cfg.apiKey(), body.toString());
+                false, null, true, null, false, Hosts.of(cfg.apiBase()));
+            String resp = post(cfg, cfg.apiBase(), cfg.apiKey(), body.toString());
             Resp r = parse(resp);
             String content = r.text == null ? "" : r.text.trim();
             return content.length() == 0 ? null : content;

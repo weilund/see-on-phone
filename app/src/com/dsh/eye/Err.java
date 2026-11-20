@@ -48,6 +48,8 @@ final class Err {
         MIXED_TOOLS,
         /** 联网模式下带了文档附件（先拦住，不发请求）。 */
         DOC_IN_WEB,
+        /** 当前端点根本不收文件（如 OpenCode Go，没有 `/files` 上传）。 */
+        DOC_UNSUPPORTED,
         /** 官方 5xx。 */
         SERVER,
         /** 响应读不懂（不是 JSON / 没有 choices / 其余 4xx）。 */
@@ -144,6 +146,7 @@ final class Err {
             case CONTENT_RISK:     return "这条被内容审核挡了，换个说法试试。";
             case MIXED_TOOLS:      return "这是 App 的问题（模式配置错），已经把详情记进日志。";
             case DOC_IN_WEB:       return "联网模式下不能读文件，要读文件请切到聊天。";
+            case DOC_UNSUPPORTED:  return "这个接口不能传文件，要传文件请切到 DeepSeek 直连。";
             case SERVER:           return "服务端出问题了（不是你的锅）。";
             case PARSE:            return "返回的内容看不懂，我记下来了。";
             case UPLOAD_TOO_BIG:   return "这个文件太大了，超过上限，换个小一点的。";
@@ -189,6 +192,7 @@ final class Err {
             case CONTENT_RISK:      return "content_risk";
             case MIXED_TOOLS:       return "mixed_tools";
             case DOC_IN_WEB:        return "doc_in_web";
+            case DOC_UNSUPPORTED:   return "doc_unsupported";
             case SERVER:            return "server";
             case PARSE:             return "parse";
             case UPLOAD_TOO_BIG:    return "upload_too_big";

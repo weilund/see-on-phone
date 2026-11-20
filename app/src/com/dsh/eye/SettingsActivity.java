@@ -663,7 +663,10 @@ public class SettingsActivity extends AppActivity {
         }
     }
 
-    private String shortModel() { return cfg.apiModel().replace("deepseek-", ""); }
+    private String shortModel() {
+        String m = cfg.apiModel().replace("deepseek-", "");
+        return cfg.provider() == Hosts.Kind.OPENCODE_GO ? "go·" + m : m;
+    }
 
     /**
      * 「接口」那一行的副标题：只有 pro 才有话说。
@@ -672,6 +675,9 @@ public class SettingsActivity extends AppActivity {
      * 最常用的两件事。不写在这儿，用户切过去之后只会觉得"它坏了"。
      */
     private String apiSub() {
+        if (cfg.provider() == Hosts.Kind.OPENCODE_GO) {
+            return cfg.searchKey().length() == 0 ? "go：联网搜索缺 DeepSeek key" : "go：搜索走 DeepSeek";
+        }
         return Caps.isPro(cfg.apiModel()) ? "pro：不看图、不读文件" : null;
     }
 
@@ -1138,29 +1144,80 @@ public class SettingsActivity extends AppActivity {
         col.setPadding(dp(16), dp(8), dp(16), dp(8));
 
         final EditText key = new EditText(this);
+        final EditText base = new EditText(this);
+        final EditText model = new EditText(this);
+        final EditText sKey = new EditText(this);
+        final EditText sBase = new EditText(this);
+
+        // 两个服务商二选一（"并存"= 界面上切换，不是同时发）。点一下把端点/模型填好。
+        LinearLayout presets = new LinearLayout(this);
+        presets.setOrientation(LinearLayout.HORIZONTAL);
+        android.widget.Button ds = new android.widget.Button(this);
+        ds.setText("DeepSeek 直连");
+        ds.setAllCaps(false);
+        ds.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                base.setText(Config.DEFAULT_BASE);
+                model.setText(Config.DEFAULT_MODEL);
+            }
+        });
+        android.widget.Button go = new android.widget.Button(this);
+        go.setText("OpenCode Go");
+        go.setAllCaps(false);
+        go.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                base.setText(Config.GO_BASE);
+                model.setText(Config.GO_MODEL);
+                // 搜索那一组永远打 DeepSeek 官方，预填它的端点（key 不共通，得用户自己填）
+                if (sBase.getText().toString().trim().length() == 0) {
+                    sBase.setText(Config.DEFAULT_BASE);
+                }
+            }
+        });
+        presets.addView(ds, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        presets.addView(go, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        col.addView(presets);
+
         key.setHint("API key（sk-…）");
         key.setText(cfg.apiKey());
         key.setSingleLine(true);
         key.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         col.addView(key);
 
-        final EditText base = new EditText(this);
         base.setHint("端点");
         base.setText(cfg.apiBase());
         base.setSingleLine(true);
         col.addView(base);
 
-        final EditText model = new EditText(this);
         model.setHint("模型");
         model.setText(cfg.apiModel());
         model.setSingleLine(true);
         col.addView(model);
 
+        TextView sHead = new TextView(this);
+        sHead.setText("联网搜索（只有 Go 下才用得上）");
+        sHead.setTextColor(Theme.TEXT_DIM);
+        sHead.setTextSize(Theme.T_TINY);
+        sHead.setPadding(0, dp(14), 0, 0);
+        col.addView(sHead);
+
+        sKey.setHint("搜索用 DeepSeek key");
+        sKey.setText(cfg.searchKey());
+        sKey.setSingleLine(true);
+        sKey.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        col.addView(sKey);
+
+        sBase.setHint("搜索端点");
+        sBase.setText(cfg.searchBase());
+        sBase.setSingleLine(true);
+        col.addView(sBase);
+
         TextView tip = new TextView(this);
-        tip.setText("填了 key 才能用。默认模型 " + Config.DEFAULT_MODEL
-            + "（能看图、能读文件）。\n"
-            + "填 " + Caps.MODEL_PRO + " 的话：不看图、不读文件 —— 换来的是更细的推理。\n"
-            + "旧名 deepseek-chat / deepseek-reasoner 已于 2026-07-24 弃用，会自动迁到新默认。");
+        tip.setText("两个服务商二选一：DeepSeek 直连（能看图、读文件、联网），"
+            + "或 OpenCode Go（" + Config.GO_MODEL + " 等；请求要多带一个 x-opencode-session 头，App 自动加）。"
+            + "\nGo 下没有服务端联网和文件上传 —— 这时开联网，搜索由下面这组 DeepSeek 官方接口代跑，"
+            + "所以**要单独填一组搜索 key**（可以就是直连用的那个）。"
+            + "\n旧名 deepseek-chat / deepseek-reasoner 已于 2026-07-24 弃用，会自动迁到新默认。");
         tip.setTextColor(Theme.TEXT_DIM);
         tip.setTextSize(Theme.T_TINY);
         tip.setPadding(0, dp(8), 0, 0);
@@ -1174,8 +1231,13 @@ public class SettingsActivity extends AppActivity {
                     cfg.setKey(key.getText().toString());
                     cfg.setBase(base.getText().toString());
                     cfg.setModel(model.getText().toString());
+                    cfg.setSearchKey(sKey.getText().toString());
+                    cfg.setSearchBase(sBase.getText().toString());
                     apply();
-                    toast(cfg.direct() ? "存了" : "key 是空的，还不能聊");
+                    boolean isGo = cfg.provider() == Hosts.Kind.OPENCODE_GO;
+                    if (!cfg.direct()) toast("key 是空的，还不能聊");
+                    else if (isGo && cfg.searchKey().length() == 0) toast("存了；联网搜索还缺 DeepSeek key");
+                    else toast("存了");
                 }
             })
             .setNegativeButton("算了", null)

@@ -107,11 +107,50 @@ final class Caps {
      * 而不是 App 自己先把功能锁死、还不解释。
      */
     static boolean can(String model, int cap) {
+        return can(Hosts.Kind.DEEPSEEK, model, cap);
+    }
+
+    /**
+     * 这个**端点 + 模型**能不能干这件事。
+     *
+     * ## 为什么 provider 也要进来
+     *
+     * `deepseek-flash` 在 DeepSeek 一家能吃"服务端搜索 / 读网页 / 自动起标题 /
+     * `/files` 上传"，在 OpenCode Go 全是**根本没有的能力**（Go 只有 chat completions
+     * 与通用 OpenAI 兼容字段）。同一个模型名，端点不同，能力表就不同 ——
+     * 所以能力判断必须带上 provider，不能让 UI 在 Go 下还摆着"联网"按钮。
+     */
+    static boolean can(Hosts.Kind prov, String model, int cap) {
+        if (prov == Hosts.Kind.OPENCODE_GO) {
+            // Go 没有：服务端搜索、读网页、title、/files。自定义 function 还在（那由客户端执行）
+            if (cap == CAP_SEARCH || cap == CAP_READ_URL || cap == CAP_TITLE || cap == CAP_FILES) {
+                return false;
+            }
+        }
         if (isPro(model)) {
             // pro：没有视觉、不能读文件；搜索 / 读网页 / 工具 / 标题都还在
             return !(cap == CAP_VISION || cap == CAP_FILES);
         }
+        if (isVisionless(model)) return cap != CAP_VISION;
         return true;
+    }
+
+    /**
+     * Go 上**纯文本**的模型（不许发图，发了就 400）。
+     *
+     * 名单来自 `/inference/go/v1/models` 的 `input_modalities`：`hy3` / `hy4-preview` /
+     * `longcat-2.0` / `beam-free` / `iceman-contributor-free` / `glm-5.3`（不带 -flash 那个）
+     * 只有 `text`。**默认放行**（认不出 = 当作有视觉），与 {@link #can} 的宽松原则一致。
+     */
+    static boolean isVisionless(String model) {
+        if (model == null) return false;
+        String m = model.trim().toLowerCase(Locale.ROOT);
+        if (m.endsWith("-text")) return true;
+        if (m.equals("glm-5.3")) return true;
+        if (m.startsWith("hy3") || m.startsWith("hy4")) return true;
+        if (m.startsWith("longcat") || m.equals("beam-free")) return true;
+        if (m.equals("iceman-contributor-free")) return true;
+        return false;
     }
 
     /** 是 pro 那一档吗（按 `-pro` 后缀放宽匹配，将来 v5-pro 自动继承限制）。 */
@@ -123,6 +162,21 @@ final class Caps {
 
     /** 能力被锁时的一句话（中文、无技术词、说清"怎么才能用"）。 */
     static String degradeHint(int cap) {
+        return degradeHint(cap, Hosts.Kind.DEEPSEEK);
+    }
+
+    /** 同上，但端点不同，原因也不同（Go 下这些能力**本来就没有**，不是模型档位问题）。 */
+    static String degradeHint(int cap, Hosts.Kind prov) {
+        if (prov == Hosts.Kind.OPENCODE_GO) {
+            switch (cap) {
+                case CAP_SEARCH:   return "这个接口不提供联网搜索，开了联网会用 DeepSeek 官方搜索。";
+                case CAP_READ_URL: return "这个接口不提供读网页，要读网页请用 DeepSeek 直连。";
+                case CAP_FILES:    return "这个接口不能传文件，要传文件请用 DeepSeek 直连。";
+                case CAP_TITLE:    return "这个接口不能自动起标题。";
+                case CAP_VISION:   return "当前模型看不了图，换一个能看图的模型。";
+                default:           return "当前接口做不了这件事。";
+            }
+        }
         switch (cap) {
             case CAP_VISION:   return "当前模型看不了图，切到 flash 才能看图。";
             case CAP_FILES:    return "当前模型读不了文件，切到 flash 才能发文件。";
@@ -189,6 +243,8 @@ final class Caps {
 
         Mode mode = Mode.CHAT;
         Kind kind = Kind.NONE;
+        /** 这个请求打向哪个服务商（请求头/请求体分叉的依据）。 */
+        Hosts.Kind provider = Hosts.Kind.DEEPSEEK;
 
         /** 写 `thinking:{"type":"enabled"}` 吗。 */
         boolean thinking;
@@ -244,6 +300,7 @@ final class Caps {
         public String toString() {
             StringBuilder sb = new StringBuilder(128);
             sb.append("plan{m=").append(mode == null ? "null" : mode.key)
+              .append(" host=").append(Hosts.key(provider))
               .append(" kind=").append(kind)
               .append(" think=").append(thinking)
               .append(" eff=").append(effort == null ? "-" : effort)
@@ -298,11 +355,36 @@ final class Caps {
     static Plan plan(Mode m, String effort, String model,
                      boolean hasDocs, boolean hasUrl,
                      boolean titleSupported, boolean allowDocsInWeb, boolean webOn) {
+        return plan(m, effort, model, hasDocs, hasUrl, titleSupported, allowDocsInWeb,
+            webOn, Hosts.Kind.DEEPSEEK);
+    }
+
+    /**
+     * 造一次请求的形状（**带服务商的完整版**）。
+     *
+     * Go 与 DeepSeek 的差别不是"参数微调"，而是**有没有服务端能力**：
+     *
+     * ```
+     * DeepSeek：联网 = SERVER（deepseek_web_search / deepseek_read_url）
+     * OpenCode Go：没这两个工具 → 联网 = CLIENT + 自定义 web_search function，
+     *              模型调它时 App 内部打 DeepSeek 官方 /v1/tools/search
+     *              （搜索用的 key 是设置里第二组，见 Config.searchKey）
+     * ```
+     *
+     * @param prov 端点属于谁（{@link Hosts#of}，空 = 按 DeepSeek 处理）
+     */
+    static Plan plan(Mode m, String effort, String model,
+                     boolean hasDocs, boolean hasUrl,
+                     boolean titleSupported, boolean allowDocsInWeb, boolean webOn,
+                     Hosts.Kind prov) {
 
         Plan p = new Plan();
+        p.provider = prov == null ? Hosts.Kind.DEEPSEEK : prov;
+        final boolean go = p.provider == Hosts.Kind.OPENCODE_GO;
         p.mode = m == null ? Mode.CHAT : m;
-        // 「聊天 + 联网」就是原来的联网模式：归一在这里做，调用方漏归一也不会静默失效
-        if (p.mode == Mode.CHAT && webOn) p.mode = Mode.WEB;
+        // 「聊天 + 联网」：DeepSeek 下归一成联网（服务端工具）；
+        // Go 下没有服务端工具，保持 CHAT，靠 hybrid 的 web_search function —— 别归一。
+        if (p.mode == Mode.CHAT && webOn && !go) p.mode = Mode.WEB;
 
         // ① 档位：一次归一，后面全用它，别在多处各判一次
         String eff = normEffort(effort);
@@ -311,8 +393,8 @@ final class Caps {
         p.sendTemperature = !p.thinking;
 
         // ② 模型能力（一次问清，别在分支里反复 can()）
-        boolean vision = can(model, CAP_VISION);
-        boolean files = can(model, CAP_FILES);
+        boolean vision = can(p.provider, model, CAP_VISION);
+        boolean files = can(p.provider, model, CAP_FILES);
         p.allowImages = vision;
 
         // ③ 模式
@@ -320,7 +402,7 @@ final class Caps {
             p.kind = Plan.Kind.SERVER;
             p.allowWebSearch = true;
             p.allowReadUrl = hasUrl;                  // 官方自己只扫最后一条消息
-            p.title = titleSupported && can(model, CAP_TITLE);
+            p.title = titleSupported && can(p.provider, model, CAP_TITLE);
             p.maxRounds = 1;                          // 服务端自管内部调用，我们只有 1 轮
             p.allowDocs = allowDocsInWeb && files;
             p.hybrid = false;
@@ -343,6 +425,21 @@ final class Caps {
              */
             p.hybrid = p.mode == Mode.AGENT && webOn;
         }
+
+        // ④ Go 的覆盖：没有服务端工具，「联网」一律走自定义 web_search（聊天也支持）
+        if (go) {
+            p.kind = Plan.Kind.CLIENT;
+            p.allowToolsFunction = true;
+            p.allowWebSearch = false;
+            p.allowReadUrl = false;
+            p.title = false;
+            p.allowDocs = false;
+            p.hybrid = webOn;
+            p.maxRounds = p.mode == Mode.AGENT ? 16 : 3;
+            // 文档在 Go 下没有上传通道：带上了就明确拦掉，别静默丢
+            if (hasDocs) p.blocked = Err.Code.DOC_UNSUPPORTED;
+        }
+
 
         // ④ 不变式：自定义工具与服务端工具**永不混用**。真被写混了就直接拒绝发请求。
         if (mixed(p)) p.blocked = Err.Code.MIXED_TOOLS;

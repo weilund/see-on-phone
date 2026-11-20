@@ -109,12 +109,47 @@
 # 1. 从 Releases 下 APK，然后
 adb install -r see-on-phone-<ver>.apk
 
-# 2. 打开「鱼眼」→ 右上角齿轮 → 填接口和 Key
-#    接口：https://api.deepseek.com/v1        （任何 OpenAI 兼容端点都行）
-#    模型：deepseek-chat
+# 2. 打开「鱼眼」→ 右上角齿轮 → 接口 → 填 Key
+#    接口：https://api.deepseek.com          （任何 OpenAI 兼容端点都行）
+#    模型：deepseek-flash                    （能看图、能读文件）
 ```
 
 第一次点"看"会申请相机权限。**装在应用商店之外**（sideload），系统会提示风险，正常。
+
+### 用 OpenCode Go
+
+手机上除了 DeepSeek 直连，还可以把接口切到 **OpenCode Go**（同一个包月额度，
+模型列表里也有一批别家的）。设置页「接口」弹窗顶部有两个预设按钮，点
+`OpenCode Go` 就会把端点/模型填好，再填它自己的 key 即可。
+
+**它和直连是"二选一"**：同时只能走一个，改动只影响之后的请求。
+
+和直连比，Go 这条路要多带一个请求头 —— 少了它，**服务端在验 key 之前就把你挡了**：
+
+| 请求头 | 值 | 说明 |
+|---|---|---|
+| `Authorization` | `Bearer <opencode key>` | 两个服务商都用这个头，key 不共通 |
+| `x-opencode-session` | 当前对话 id（稳定） | 少它 → `400 MissingSessionID`；App 自动加 |
+| `User-Agent` | `SeeOnPhone/<版本>` | 别用通用 HTTP 库的名字，会被当成爬虫 |
+
+几个差异（App 已经替用户处理，知道一下少踩坑）：
+
+- Go 下**没有**服务端联网搜索、文件上传、自动标题 —— 这几个能力位会被关掉，
+  界面上对应的按钮/入口会明确说"切到 DeepSeek 直连才能用"；
+- 但**联网还是能开**：Go 下开联网时，搜索由 App 内部再打一次 DeepSeek 官方的
+  `/v1/tools/search` 代跑，所以要在同一弹窗下半部分填**第二组 DeepSeek key**
+  （可以就是直连用的那个）；
+- Go 的 DeepSeek 模型需要在 Console 的 `Settings › Privacy › Regions` 选
+  `Global`，不然请求会失败；
+- 花费按牌价估算，和实际账单可能有小差。
+
+不想开 App 也能验一下端点通不通（**不需要 key**，只验那两个前置校验）：
+
+```bash
+node scripts/probe-opencode.mjs
+# 或者带 key 真打一次
+OPENCODE_GO_KEY=sk-... node scripts/probe-opencode.mjs
+```
 
 ### 自己编译
 

@@ -169,7 +169,7 @@ final class Asker {
      * ③ 不要回答「我没有联网」。另外比 AGENT_NOTE 多列一个工具、多一句"搜索也算一步"。
      */
     private static final String HYBRID_NOTE =
-        "\n\n【本轮是 Agent 模式，并且开着联网】你可以连续多步调用工具："
+        "\n\n【本轮开着联网，可以边搜边动手】你可以连续多步调用工具："
         + "`look` 看画面、`files` 读写工作区（含 replace 精确替换）、`memory_read` / `memory_write` "
         + "读写记忆、`tune` 调画质、`web_search` 联网搜索、`read_url` 读网页正文。"
         + "需要动手时**直接调用**，不要先问；每一步的结果会回到你这里，最多 16 步（搜索也算一步）。\n"
@@ -185,8 +185,11 @@ final class Asker {
     /** 按模式拼 system：聊天 = 原样，联网/Agent/混合 追加本轮能力说明。 */
     static String systemFor(Caps.Plan p) {
         if (p == null) return SYSTEM;
+        // hybrid 优先：OpenCode Go 下发「聊天 + 联网」也是 hybrid（CLIENT + web_search），
+        // 此时 mode 仍是 CHAT —— 若按 mode 判断会掉进"没联网"的提示词，工具白给。
+        if (p.hybrid) return SYSTEM + HYBRID_NOTE;
         if (p.mode == Caps.Mode.WEB) return SYSTEM + WEB_NOTE;
-        if (p.mode == Caps.Mode.AGENT) return SYSTEM + (p.hybrid ? HYBRID_NOTE : AGENT_NOTE);
+        if (p.mode == Caps.Mode.AGENT) return SYSTEM + AGENT_NOTE;
         return SYSTEM;
     }
 
@@ -616,7 +619,7 @@ final class Asker {
     private Caps.Plan defaultPlan() {
         // 老入口（`/ask` HTTP、通话页）也要尊重"联网开着没有"，否则界面显示联网、请求却是聊天
         return Caps.plan(Caps.Mode.CHAT, cfg.think(), cfg.apiModel(),
-            false, false, true, cfg.allowDocsInWeb(), cfg.web());
+            false, false, true, cfg.allowDocsInWeb(), cfg.web(), cfg.provider());
     }
 
     /** 造一条步骤事件（客户端工具用；服务端事件由 {@code Brain} 造）。 */
