@@ -6,12 +6,18 @@ import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
+import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 
 /**
  * 悬浮球：在别人的 App（视频 / 游戏）上面也能点到的「陪你看屏幕」开关。
@@ -57,6 +63,19 @@ final class BubbleWindow {
     private Ball ball;
     private View view;
 
+    /**
+     * 外层容器：球 + 文字气泡。窗口加的是它，不是球本身 ——
+     * 这样「模型刚才说了什么」可以和球长在同一个窗口里，拖动、显隐只有一套坐标。
+     */
+    private LinearLayout root;
+    /** 气泡里的那句话。null = 还没建出来。 */
+    private TextView bubbleText;
+    /** 气泡自己的消失计时器（主线程）。 */
+    private final Handler ui = new Handler(Looper.getMainLooper());
+    private final Runnable hush = new Runnable() {
+        @Override public void run() { hushNow(); }
+    };
+
     /** 当前外观状态。未显示时也要记着，下一次 {@link #show()} 直接用。 */
     private int state = IDLE;
 
@@ -88,6 +107,14 @@ final class BubbleWindow {
 
         Ball b = new Ball(ctx);
 
+        LinearLayout box = new LinearLayout(ctx);
+        box.setOrientation(LinearLayout.HORIZONTAL);
+        box.setGravity(Gravity.CENTER_VERTICAL);
+        box.addView(b, new LinearLayout.LayoutParams(dp(SIZE_DP), dp(SIZE_DP)));
+
+        TextView say = makeBubble();
+        box.addView(say, bubbleLp(say));
+
         // TYPE_PHONE 在 26 之后被系统拦掉，必须换 TYPE_APPLICATION_OVERLAY；
         // 两个常量都是编译期内联的 int，所以老设备上也不会去解析新字段。
         WindowManager.LayoutParams p = new WindowManager.LayoutParams();
@@ -102,8 +129,9 @@ final class BubbleWindow {
                 | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                 | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
         p.gravity = Gravity.TOP | Gravity.START;
-        p.width = dp(SIZE_DP);
-        p.height = dp(SIZE_DP);
+        // 容器是 wrap_content：没有气泡时它正好 48dp，say() 之后变宽。
+        p.width = WindowManager.LayoutParams.WRAP_CONTENT;
+        p.height = WindowManager.LayoutParams.WRAP_CONTENT;
         p.x = dp(12);
         p.y = dp(160);
 
@@ -112,7 +140,7 @@ final class BubbleWindow {
         // 没给「显示在其他应用上层」权限时 addView 会抛 BadTokenException。
         // 这里必须吞掉：悬浮球只是附属功能，不能因为它把整个服务带崩。
         try {
-            wm.addView(b, p);
+            wm.addView(box, p);
         } catch (Throwable e) {
             EyeLog.w(TAG, "加不上悬浮窗：" + e);
             return;
@@ -120,7 +148,9 @@ final class BubbleWindow {
 
         lp = p;
         ball = b;
-        view = b;
+        root = box;
+        bubbleText = say;
+        view = box;
         // 放在 addView 成功之后再设：失败时不会留下一个永远在跑的呼吸动画。
         b.setState(state);
     }
@@ -135,6 +165,9 @@ final class BubbleWindow {
         Ball b = ball;
         view = null;
         ball = null;
+        root = null;
+        bubbleText = null;
+        ui.removeCallbacks(hush);
         dragging = false;
         longFired = false;
 
@@ -155,6 +188,120 @@ final class BubbleWindow {
     void setState(int s) {
         state = s;
         if (ball != null) ball.setState(s);
+    }
+
+    /**
+     * 在球旁边说一句话（模型对刚才那一眼的反应）。
+     *
+     * <p>气泡会自己消失：短句 5 秒左右，长句按字数多留一会儿，上限 15 秒。
+     * 传 null / 空串等于「收掉」。
+     */
+    void say(String text) {
+        if (bubbleText == null || lp == null) return;
+        String t = text == null ? "" : text.trim();
+        if (t.length() == 0) { hushNow(); return; }
+        if (t.length() > 120) t = t.substring(0, 119) + "…";
+
+        ui.removeCallbacks(hush);
+        bubbleText.animate().cancel();
+        bubbleText.setText(t);
+        moveBubbleToFreeSide();
+        bubbleText.setAlpha(0f);
+        bubbleText.setVisibility(View.VISIBLE);
+        bubbleText.animate().alpha(1f).setDuration(180).start();
+        // 看视频/打游戏时人不会一直盯着左上角，留够时间：5 秒起，按字数加，最多 15 秒
+        long hold = Math.min(15000L, 5000L + t.length() * 120L);
+        ui.postDelayed(hush, hold);
+
+        // 冒出气泡后窗口变宽：让 WindowManager 重新量一次，球还贴在原来那角
+        try {
+            wm.updateViewLayout(root, lp);
+        } catch (Throwable ignored) {
+            // 窗口刚好被收掉时这里会抛，气泡下次也没机会显示，忽略即可。
+        }
+    }
+
+    /** 立刻把气泡收掉（球不动）。 */
+    void hushNow() {
+        ui.removeCallbacks(hush);
+        final TextView t = bubbleText;
+        if (t == null || t.getVisibility() != View.VISIBLE) return;
+        t.animate().cancel();
+        t.animate().alpha(0f).setDuration(150).withEndAction(new Runnable() {
+            @Override public void run() {
+                t.setVisibility(View.GONE);
+                // 气泡收掉后窗口要缩回 48dp，不然那块透明区域会继续吃掉下面 App 的触摸。
+                try {
+                    if (root != null && lp != null) wm.updateViewLayout(root, lp);
+                } catch (Throwable ignored) {
+                }
+            }
+        }).start();
+    }
+
+    /**
+     * 球在左半屏时气泡放右边，在右半屏时放左边 —— 否则拖到屏幕边缘，
+     * 气泡会有一半长到屏幕外面去。
+     */
+    private void moveBubbleToFreeSide() {
+        if (root == null || bubbleText == null || lp == null) return;
+        int sw = ctx.getResources().getDisplayMetrics().widthPixels;
+        int sh = ctx.getResources().getDisplayMetrics().heightPixels;
+        int size = dp(SIZE_DP);
+        boolean putLeft = lp.x + size / 2 > sw / 2;
+        ViewGroup.LayoutParams params = bubbleText.getLayoutParams();
+        boolean hadParams = params != null;
+        root.removeView(bubbleText);
+        if (putLeft) root.addView(bubbleText, 0, hadParams ? params : bubbleLp(bubbleText));
+        else root.addView(bubbleText, hadParams ? params : bubbleLp(bubbleText));
+
+        // 窗口是从 lp.x 往右长出来的。球贴在右半屏时，气泡排在球的左边，
+        // 但 window 的左边界还停在球那儿，整块就被顶出屏幕右边去了 ——
+        // 量一下真实宽高，把窗口挪回来：球仍然贴着原来那一侧，气泡完整可见。
+        int x = lp.x;
+        int y = lp.y;
+        try {
+            root.measure(View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+            int w = root.getMeasuredWidth();
+            int h = root.getMeasuredHeight();
+            if (putLeft) x = lp.x + size - w;
+            x = Math.max(0, Math.min(x, Math.max(0, sw - w)));
+            y = Math.max(0, Math.min(y, Math.max(0, sh - h)));
+        } catch (Throwable ignored) {
+            // 量不出来就按原位置放，最多是气泡偏一点。
+        }
+        if (x != lp.x || y != lp.y) {
+            lp.x = x;
+            lp.y = y;
+        }
+    }
+
+    /** 气泡本体：深色圆角 + 一行行小字，最多 6 行（再长就截断，悬浮窗不该糊住半个屏）。 */
+    private TextView makeBubble() {
+        TextView v = new TextView(ctx);
+        v.setTextSize(13f);
+        v.setTextColor(0xFFFFFFFF);
+        v.setMaxLines(6);
+        v.setLineSpacing(dp(2), 1f);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xF21B2230);
+        bg.setCornerRadius(dp(14));
+        bg.setStroke(Math.max(1, dp(1)), 0x33FFFFFF);
+        v.setBackground(bg);
+        v.setPadding(dp(10), dp(7), dp(10), dp(7));
+        v.setVisibility(View.GONE);
+        return v;
+    }
+
+    private LinearLayout.LayoutParams bubbleLp(TextView t) {
+        int max = (int) (ctx.getResources().getDisplayMetrics().widthPixels * 0.62f);
+        t.setMaxWidth(max);
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        p.leftMargin = dp(6);
+        p.rightMargin = dp(6);
+        return p;
     }
 
     boolean isShown() {
@@ -207,6 +354,7 @@ final class BubbleWindow {
                         // 会把「单击」误判成拖动。
                         if (!dragging && Math.hypot(dx, dy) > vc.getScaledTouchSlop()) {
                             dragging = true;
+                            hushNow();
                             // 主动撤掉 View 排着的长按计时器：球是跟着手指走的，
                             // View 自己的「移动超过 slop 就取消长按」用的是 view 坐标，
                             // 窗口跟手之后这个判断会失效，不加这一句拖久了就会被判成长按。
@@ -216,7 +364,8 @@ final class BubbleWindow {
                             lp.x = startX + (int) dx;
                             lp.y = startY + (int) dy;
                             try {
-                                wm.updateViewLayout(b, lp);
+                                // 拖的时候整块容器一起走；气泡先收掉，免得宽度跟着跳
+                                wm.updateViewLayout(view != null ? view : (View) b, lp);
                             } catch (Throwable ignored) {
                                 // 窗口刚好被系统收回时这里会抛，下一帧事件也不会再来，忽略即可。
                             }

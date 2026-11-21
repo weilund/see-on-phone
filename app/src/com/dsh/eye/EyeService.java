@@ -495,6 +495,7 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
             screenWanted = true;
             bubbleShow();                    // 球先挂出来：授权完不用再找入口
             bubbleState(BubbleWindow.WAITING);
+            bubbleSay("点系统弹窗里的「开始录制」");
             try {
                 Intent i = new Intent(this, GrantActivity.class);
                 i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -534,6 +535,7 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
         else screenSrc.stop();       // 单次看图临时开的那段也收掉
         screenWanted = false;
         bubbleState(BubbleWindow.IDLE);
+        if (bubble != null) bubble.hushNow();
         if (was) EyeLog.w("screen", "一起看：关了");
     }
 
@@ -626,6 +628,22 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
             });
         }
         bubble.show();
+    }
+
+    /**
+     * 往悬浮球旁边的那句话里塞一句。**只在陪看模式下说** —— 普通聊天不走气泡，
+     * 否则用户在别的 App 里会莫名其妙被一句话糊住。
+     *
+     * <p>线程：`onReply` 可能在工作线程，`say()` 只认主线程，所以这里统一 post。
+     */
+    private void bubbleSay(final String text) {
+        if (text == null || text.length() == 0) return;
+        ui.post(new Runnable() {
+            @Override public void run() {
+                if (bubble == null || !bubble.isShown()) return;
+                bubble.say(text);
+            }
+        });
     }
 
     private void bubbleState(int s) {
@@ -1782,6 +1800,8 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
                         lastLook = null;
                         Ui u = uiSink;
                         if (u != null) u.onReply(rep, files, lastAssistantAt);
+                        // 陪看模式：把这一句挂到悬浮球旁边的气泡上（别的模式不打扰）
+                        if (companionOn()) bubbleSay(rep.text);
                         answerLine(rep.text);
                         afterReply(rep);
                     }
