@@ -222,6 +222,14 @@ final class Looker {
         o.queueDepth = 1;
         tuning.applyTo(o);
         if (cfg.maxFrames() > 0) o.maxFrames = cfg.maxFrames();
+        /**
+         * **横屏整幅**：宽画面（1280×576，2.2:1）一箱只放一帧。
+         *
+         * 宫格总画布约 471×314。放 4 帧时每格 235×157，横屏画面塞进去字就糊了；
+         * 一箱一帧则整幅缩进画布（471×212），面积翻约 2 倍，视频字幕/游戏 UI 才认得出来。
+         * 宽度判据用 `screenWide()`（相机竖屏不受影响）。
+         */
+        if (cfg.maxFrames() == 0 && svc != null && svc.screenWide()) o.maxFrames = 1;
         return o;
     }
 

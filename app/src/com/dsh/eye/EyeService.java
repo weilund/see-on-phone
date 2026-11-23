@@ -615,6 +615,9 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
     /** 设置页要用：现在手里有没有一张「录屏授权」（可能还没开始看）。 */
     boolean screenGranted() { return screenSrc.hasGrant(); }
 
+    /** 屏幕帧是不是横的（1280×576）。横屏时一箱只放一帧，整幅最清楚。 */
+    boolean screenWide() { return screenSrc.width() > screenSrc.height(); }
+
     /** 设置页/排障用：当前屏幕帧的宽高（能判断是不是按横屏建的）。 */
     int screenW() { return screenSrc.width(); }
 
