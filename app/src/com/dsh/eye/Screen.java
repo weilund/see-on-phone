@@ -3,6 +3,9 @@ package com.dsh.eye;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Matrix;
+import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
@@ -35,8 +38,9 @@ import java.nio.ByteBuffer;
  * 虚拟屏是启动那一刻按 `DisplayMetrics` 建的，**不会自己跟着转**：
 
  * 转屏/分屏/改分辨率时**不重建**（Android 14 上换虚拟屏会被系统判成投射结束，
- * 打断陪伴还得重新授权）：保持原虚拟屏，系统会把横屏画面按比例缩到画布中间，
- * 陪伴不中断。想要"横屏也清楚"，重开一次「一起看屏幕」，那时按当前方向建：
+ * 打断陪伴还得重新授权）：保持原虚拟屏。横屏时由 {@link #upright()} 把画面**转 90°
+ * 立起来铺满竖屏画布**（先裁掉 letterbox 黑边），这样宫格里每格都是有效画面。
+ * 想要"横屏也清楚"，重开一次「一起看屏幕」，那时按当前方向建：
  *
  * - 横屏输出抬到 1280 宽（竖屏仍是 720）—— 横屏本来就矮，压到 324 高就全糊了。
  *
@@ -330,6 +334,8 @@ final class Screen {
                     if (s != null) s.onScreenBlocked();
                     return;
                 }
+                // 横屏：把画面转 90° 立起来铺满竖屏画布（见 upright()）
+                if (landscape()) bmp = upright(bmp, outW, outH);
                 ByteArrayOutputStream out = new ByteArrayOutputStream(64 * 1024);
                 bmp.compress(Bitmap.CompressFormat.JPEG, 80, out);
                 byte[] jpg = out.toByteArray();
@@ -348,6 +354,74 @@ final class Screen {
     };
 
     /** `Image` → `Bitmap`。有些设备的 `rowStride` 比宽度大，先按 stride 建再裁。 */
+    /** 现在物理方向是不是横的（决定要不要把画面立起来）。 */
+    private boolean landscape() {
+        Context c = appCtx;
+        if (c == null) return false;
+        DisplayMetrics dm = c.getResources().getDisplayMetrics();
+        return dm.widthPixels > dm.heightPixels;
+    }
+
+    /**
+     * **横屏 → 立起来**：把横屏画面转 90° 铺满竖屏画布。
+     *
+     * <p>为什么需要这一步：虚拟屏固定是竖屏比例（720×1472）。横屏内容塞进去时，
+     * 系统要么把它缩成中间一条（上下大片黑边），要么直接拉扁 —— 两种在宫格里都浪费画幅。
+     * 转 90° 之后内容能铺满整块画布，宫格的每一格都是有效画面。
+     *
+     * <p>代价说清楚：**像素没有变多**。横屏内容在竖屏画布里本来就只有 ~720×324，
+     * 转过来放大到 720×1472 只是"铺满"，不是"变清晰"。要真的看清字幕，只有重开一次
+     * 「一起看屏幕」按横屏 1280×576 建。
+     *
+     * <p>处理顺序：先裁掉上下黑边（如果系统是居中缩放）→ 旋转 90° → 居中裁切铺满。
+     */
+    private Bitmap upright(Bitmap src, int cw, int ch) {
+        int w = src.getWidth();
+        int h = src.getHeight();
+        int top = 0;
+        int bottom = h - 1;
+        for (int y = 0; y < h; y += 4) {
+            if (!rowDark(src, y)) { top = y; break; }
+        }
+        for (int y = h - 1; y >= 0; y -= 4) {
+            if (!rowDark(src, y)) { bottom = y; break; }
+        }
+        int contentH = Math.max(2, bottom - top + 1);
+        Bitmap content = contentH < h * 92 / 100
+            ? Bitmap.createBitmap(src, 0, top, w, contentH)   // 有黑边：裁出来
+            : src;                                            // 没黑边（被拉扁）：先按原样
+        Bitmap out = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888);
+        try {
+            Canvas cv = new Canvas(out);
+            Matrix m = new Matrix();
+            m.postRotate(90);
+            // 旋转后尺寸是 (contentH, w)；居中裁切铺满 cw×ch
+            float scale = Math.max((float) cw / contentH, (float) ch / w);
+            m.postScale(scale, scale);
+            m.postTranslate((cw - contentH * scale) / 2f, (ch - w * scale) / 2f);
+            cv.drawBitmap(content, m, new Paint(Paint.FILTER_BITMAP_FLAG));
+        } finally {
+            if (content != src) content.recycle();
+            // 原帧已经画进 out 了：显式回收，横屏时 5fps 每帧 4MB，靠 GC 兜容易抖
+            try { src.recycle(); } catch (Throwable ignored) { }
+        }
+        return out;
+    }
+
+    /** 这一行是不是"整行都接近黑"（用来找 letterbox 黑边）。 */
+    private static boolean rowDark(Bitmap b, int y) {
+        int w = b.getWidth();
+        int step = Math.max(1, w / 24);
+        for (int x = 0; x < w; x += step) {
+            int p = b.getPixel(x, y);
+            int r = (p >> 16) & 0xFF;
+            int g = (p >> 8) & 0xFF;
+            int bl = p & 0xFF;
+            if (r + g + bl > 36) return false;
+        }
+        return true;
+    }
+
     private static Bitmap toBitmap(Image img) {
         try {
             Image.Plane p = img.getPlanes()[0];
