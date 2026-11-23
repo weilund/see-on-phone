@@ -19,6 +19,7 @@ import android.os.HandlerThread;
 import android.os.SystemClock;
 import android.util.DisplayMetrics;
 import android.view.Display;
+import android.view.Surface;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
@@ -396,7 +397,18 @@ final class Screen {
             if (d != null) {
                 Point p = new Point();
                 d.getRealSize(p);
-                if (p.x > 0 && p.y > 0) return new int[] { p.x, p.y };
+                if (p.x > 0 && p.y > 0) {
+                    /**
+                     * **按 rotation 摆正**：`getRealSize()` 是物理分辨率，不少实现**不随旋转 swap**
+                     * （真机上横屏时仍返回 1080×2400 → 永远按竖屏建，画面就只剩中间一条）。
+                     * rotation 才是权威的方向信号。
+                     */
+                    int rot = d.getRotation();
+                    boolean land = rot == Surface.ROTATION_90 || rot == Surface.ROTATION_270;
+                    int big = Math.max(p.x, p.y);
+                    int small = Math.min(p.x, p.y);
+                    return land ? new int[] { big, small } : new int[] { small, big };
+                }
             }
         } catch (Throwable ignored) {
             // 拿不到就退回 DisplayMetrics（老设备/奇怪的分屏）

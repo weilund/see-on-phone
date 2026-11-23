@@ -112,6 +112,8 @@ final class Pipeline {
         double binCost = 1000;
         int queueDepth = 1;
         boolean oneShot = false;
+        /** 高清档：画布用 {@link Tokens#CANVAS_HD}（600×800），格子里的字大约 1.6 倍。 */
+        boolean hd = false;
         /**
          * 把"按帧的窗口"折算成"按秒"（0.4.8）。
          *
@@ -160,7 +162,7 @@ final class Pipeline {
             o.strategy = strategy; o.tierMap = tierMap;
             o.markBoost = markBoost; o.floorBoost = floorBoost; o.boostMinFrames = boostMinFrames;
             o.maxWaitSec = maxWaitSec; o.flushGain = flushGain; o.maxFrames = maxFrames;
-            o.binCost = binCost; o.queueDepth = queueDepth; o.oneShot = oneShot;
+            o.binCost = binCost; o.queueDepth = queueDepth; o.oneShot = oneShot; o.hd = hd;
             o.timeNormalizeFrames = timeNormalizeFrames;
             o.timeNormalizeFrames = timeNormalizeFrames;
             return o;
@@ -512,7 +514,7 @@ final class Pipeline {
             next.add(t);
             int[] na = toArr(next);
             if (!cur.isEmpty() && Packer.pack(na, Packer.DEFAULT_STRETCH, o.maxCrop, o.maxCrop,
-                o.binCost, o.packMode).bins > 1) {
+                o.binCost, o.packMode, o.hd).bins > 1) {
                 segs.add(toArr(cur));
                 cur = new ArrayList<>();
                 cur.add(t);

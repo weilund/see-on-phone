@@ -42,6 +42,15 @@ final class Tokens {
     static final int[] CANVAS = fit(3, 4);
 
     /**
+     * **高清档画布**：3:4、长边顶到 {@link #MAX_SIDE}（800）→ 600×800。
+     *
+     * 默认画布 471×628 是"面积压在计费地板 544²"上的结果，再大一分钱不花也看不了更多；
+     * 高清档主动花这份钱换像素：面积 1.6 倍，格子里的字大概大 1.6 倍。
+     * 由设置页「高清宫格」开关控制（默认关）。
+     */
+    static final int[] CANVAS_HD = fit(3, 4, MAX_SIDE * MAX_SIDE * 3 / 4);
+
+    /**
      * **方形画布**（`packMode = skyline` 用）。
      *
      * 天幕的格子是**正方形**（`pack.js::solveSkyline` 只按一条边算），而手机拍的画面是 3:4。
@@ -162,9 +171,11 @@ final class Tokens {
      * @param aspectDen 高
      * @return `{w, h}`
      */
-    static int[] fit(int aspectNum, int aspectDen) {
+    static int[] fit(int aspectNum, int aspectDen) { return fit(aspectNum, aspectDen, UPSCALE_AREA); }
+
+    /** 指定面积上限的版本（高清档用：面积抬到 600×800）。 */
+    static int[] fit(int aspectNum, int aspectDen, int area) {
         double a = Math.max(0.2, Math.min(5, aspectNum / (double) aspectDen));
-        int area = UPSCALE_AREA;
         double w = Math.sqrt(area * a);
         double h = w / a;
         double shrink = Math.min(1, Math.min(MAX_SIDE / w, MAX_SIDE / h));

@@ -225,6 +225,12 @@ public class SettingsActivity extends AppActivity {
                 cfg.setTierStyle(cfg.nextTier());
                 apply();
             } });
+        row("image", "高清宫格", "画布 588×784，字大约 1.6 倍；代价是每轮图 token +60%",
+            cfg.hdMode() ? "开" : "关",
+            new Runnable() { public void run() {
+                cfg.setHdMode(!cfg.hdMode());
+                apply();
+            } });
 
         head("能力");
         row("eye", "记忆", "它每轮都会看到的东西", memoryBrief(),

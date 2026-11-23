@@ -108,6 +108,7 @@ final class Config {
     private static final String K_PACE = "pace";
     private static final String K_TIER = "tierStyle";
     private static final String K_MAXFRAMES = "maxFrames";
+    private static final String K_HD = "hd";
     /**
      * 「宫格张数」的旧键（`callN`），**已废**。
      *
@@ -165,7 +166,7 @@ final class Config {
      * ⚠️ 这里没有读 `BuildConfig.version()`：`Brain` 是纯静态工具，拿不到 context。
      * 发版时跟着 `AndroidManifest.xml` 的 versionName 一起改（两处，注释互相提醒）。
      */
-    static final String UA = "SeeOnPhone/2.7.10 (+https://github.com/weilund/see-on-phone)";
+    static final String UA = "SeeOnPhone/2.7.11 (+https://github.com/weilund/see-on-phone)";
 
     static final String DEFAULT_VOICE = "";
 
@@ -770,6 +771,11 @@ final class Config {
         if ("single".equals(v)) return "一张图只放一帧（整幅）";
         return "每帧占多大格子";
     }
+
+    /** 高清档：宫格画布 600×800（默认 471×628）。多花约 60% 图 token，字大约 1.6 倍。 */
+    boolean hdMode() { return sp.getBoolean(K_HD, false); }
+
+    void setHdMode(boolean on) { sp.edit().putBoolean(K_HD, on).apply(); }
 
     /** 一张宫格最多几帧。0 = 用 `Pipeline.Opts` 的默认（40）。 */
     int maxFrames() {

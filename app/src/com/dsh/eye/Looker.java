@@ -230,6 +230,7 @@ final class Looker {
          * 宽度判据用 `screenWide()`（相机竖屏不受影响）。
          */
         if (cfg.maxFrames() == 0 && svc != null && svc.screenWide()) o.maxFrames = 1;
+        o.hd = cfg.hdMode();
         return o;
     }
 

@@ -350,7 +350,11 @@ final class Packer {
      * @param tiers 档位序列（时间顺序），1..8 或 0(FREE)
      */
     static Result solve(int[] tiers, double stretch, double binCost) {
-        return solve(tiers, stretch, DEFAULT_CROP[0], DEFAULT_CROP[1], binCost);
+        return solve(tiers, stretch, DEFAULT_CROP[0], DEFAULT_CROP[1], binCost, false);
+    }
+
+    static Result solve(int[] tiers, double stretch, double binCost, boolean hd) {
+        return solve(tiers, stretch, DEFAULT_CROP[0], DEFAULT_CROP[1], binCost, hd);
     }
 
     /**
@@ -360,6 +364,12 @@ final class Packer {
      * 就会造出"DP 以为是 10%、实际裁了 30%"的图（JS 侧真踩过）。
      */
     static Result solve(int[] tiers, double stretch, double cropX, double cropY, double binCost) {
+        return solve(tiers, stretch, cropX, cropY, binCost, false);
+    }
+
+    /** `hd` = 高清档画布（{@link Tokens#CANVAS_HD}）。 */
+    static Result solve(int[] tiers, double stretch, double cropX, double cropY, double binCost,
+                        boolean hd) {
         Result empty = new Result();
         int n = tiers.length;
         if (n == 0) return empty;
@@ -454,6 +464,7 @@ final class Packer {
 
         // ⑤ 生成 cells（与 JS 完全同一套坐标）
         Result res = new Result();
+        if (hd) { res.canvasW = Tokens.CANVAS_HD[0]; res.canvasH = Tokens.CANVAS_HD[1]; }
         double binH = 0;
         int bin = 0;
         int seq = 0;
@@ -507,14 +518,23 @@ final class Packer {
      * 必须用同一个排布器，否则"判它装得下"和"画出来"就对不上。
      */
     static Result pack(int[] tiers, double stretch, double binCost, String packMode) {
-        return pack(tiers, stretch, DEFAULT_CROP[0], DEFAULT_CROP[1], binCost, packMode);
+        return pack(tiers, stretch, DEFAULT_CROP[0], DEFAULT_CROP[1], binCost, packMode, false);
+    }
+
+    static Result pack(int[] tiers, double stretch, double binCost, String packMode, boolean hd) {
+        return pack(tiers, stretch, DEFAULT_CROP[0], DEFAULT_CROP[1], binCost, packMode, hd);
     }
 
     /** 带裁切预算的版本（`pipeline.js` 的 `cropBudget`，见 `Opts.maxCrop`）。 */
     static Result pack(int[] tiers, double stretch, double cropX, double cropY,
                        double binCost, String packMode) {
+        return pack(tiers, stretch, cropX, cropY, binCost, packMode, false);
+    }
+
+    static Result pack(int[] tiers, double stretch, double cropX, double cropY,
+                       double binCost, String packMode, boolean hd) {
         return "skyline".equals(packMode) ? solveSkyline(tiers)
-                                          : solve(tiers, stretch, cropX, cropY, binCost);
+                                          : solve(tiers, stretch, cropX, cropY, binCost, hd);
     }
 
     /**
