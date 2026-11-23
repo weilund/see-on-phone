@@ -334,8 +334,12 @@ final class Screen {
                     if (s != null) s.onScreenBlocked();
                     return;
                 }
-                // 横屏：把画面转 90° 立起来铺满竖屏画布（见 upright()）
-                if (landscape()) bmp = upright(bmp, outW, outH);
+                // 横屏：把画面转 90° 立起来铺满竖屏画布（见 upright()）；
+                // 返回 null = 这一帧不需要转（没检测到 letterbox），保持原样
+                if (landscape()) {
+                    Bitmap up = upright(bmp, outW, outH);
+                    if (up != null) bmp = up;
+                }
                 ByteArrayOutputStream out = new ByteArrayOutputStream(64 * 1024);
                 bmp.compress(Bitmap.CompressFormat.JPEG, 80, out);
                 byte[] jpg = out.toByteArray();
@@ -387,22 +391,30 @@ final class Screen {
             if (!rowDark(src, y)) { bottom = y; break; }
         }
         int contentH = Math.max(2, bottom - top + 1);
-        Bitmap content = contentH < h * 92 / 100
-            ? Bitmap.createBitmap(src, 0, top, w, contentH)   // 有黑边：裁出来
-            : src;                                            // 没黑边（被拉扁）：先按原样
+        /**
+         * 没有上下黑边就**不转**（返回 null，调用方保持原帧）。
+         *
+         * 两种可能：① 内容真的铺满了画布（系统按拉伸处理，不是我们预期的 letterbox）；
+         * ② 屏幕其实还是竖的，只是 `landscape()` 读到的尺寸变了。
+         * 这两种情况下把整帧转 90° 只会把画面裁得只剩中间一条 —— 宁可不转。
+         */
+        if (contentH >= h * 92 / 100) return null;
+
+        Bitmap content = Bitmap.createBitmap(src, 0, top, w, contentH);
         Bitmap out = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888);
         try {
             Canvas cv = new Canvas(out);
             Matrix m = new Matrix();
+            // ⚠️ 顺序：rotate(90) 之后内容落在 x∈[-contentH,0] 的负象限里，必须先平移回正，
+            //    否则后面怎么"居中"都还在画布外（2.7.5 的黑屏就是这个原因）
             m.postRotate(90);
-            // 旋转后尺寸是 (contentH, w)；居中裁切铺满 cw×ch
+            m.postTranslate(contentH, 0);
             float scale = Math.max((float) cw / contentH, (float) ch / w);
             m.postScale(scale, scale);
             m.postTranslate((cw - contentH * scale) / 2f, (ch - w * scale) / 2f);
             cv.drawBitmap(content, m, new Paint(Paint.FILTER_BITMAP_FLAG));
         } finally {
-            if (content != src) content.recycle();
-            // 原帧已经画进 out 了：显式回收，横屏时 5fps 每帧 4MB，靠 GC 兜容易抖
+            content.recycle();
             try { src.recycle(); } catch (Throwable ignored) { }
         }
         return out;
