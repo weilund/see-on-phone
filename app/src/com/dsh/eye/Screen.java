@@ -30,6 +30,16 @@ import java.nio.ByteBuffer;
  * 所以这里不生产「一张截图」，而是持续产帧。单次看图（`look_screen`）复用最新那一帧；
  * 陪伴模式（悬浮球）复用同一个回调。
  *
+ * ## 横屏与转屏
+ *
+ * 虚拟屏是启动那一刻按 `DisplayMetrics` 建的，**不会自己跟着转**：
+
+ * 转屏/分屏/改分辨率时，**不能**用同一个 token 原地重建虚拟屏（Android 14 会把
+ * 「换 display」当成投射结束，实测必定 `onStop`）。所以 {@link #rebuildForSize()}
+ * 选择停掉采集并通知上层重新授权；重开时按新方向建：
+ *
+ * - 横屏输出抬到 1280 宽（竖屏仍是 720）—— 横屏本来就矮，压到 324 高就全糊了。
+ *
  * ## 为什么缩到 720 宽
  *
  * 原生 1080×2400 每帧编码 JPEG 要 ~40ms，5fps 就吃掉 20% 单核；缩到 720 宽后
@@ -55,6 +65,16 @@ final class Screen {
         void onScreenJpeg(byte[] jpg);
         /** 这一刻屏幕是黑的（`FLAG_SECURE` 界面 / 锁屏）：别把它当正常画面发出去。 */
         void onScreenBlocked();
+        /**
+         * 系统把投射收回了（用户点了「停止共享」/ 权限被改 / 系统认为不该继续）。
+         * 实现方要把"正在看"的状态也收掉，否则界面显示在看、实际早就没帧了。
+         */
+        default void onScreenStopped() { }
+        /**
+         * 屏幕尺寸/方向变了，而采集**没法原地跟着变**（Android 14 上重建虚拟屏会被系统
+         * 判成「投射结束」，实测 4 秒后必定 `onStop`）。所以采集已经停掉，等上层重新授权。
+         */
+        default void onScreenSizeChanged(int newW, int newH) { }
     }
 
     private static final String TAG = "screen";
@@ -81,6 +101,13 @@ final class Screen {
     private int outW;
     private int outH;
     private int outDpi;
+    /** 调用方给的宽度口径（竖屏用；横屏会自动抬到 1280，见 {@link #sizeFor}）。 */
+    private int maxW = 720;
+    /** 应用 Context：旋转后要重新读 `DisplayMetrics`。 */
+    private Context appCtx;
+    /** 盯着屏幕尺寸变化（转屏 / 分屏 / 改分辨率）—— 变了就得重建虚拟屏。 */
+    private DisplayManager displayMgr;
+    private DisplayManager.DisplayListener displayListener;
 
     /** 授权 Intent（系统那个「开始录制或投射」弹窗）。 */
     static Intent intent(Context c) {
@@ -115,6 +142,8 @@ final class Screen {
         stop();
         this.sink = sink;
         this.fps = Math.max(1, fps);
+        this.maxW = maxW <= 0 ? 720 : maxW;
+        this.appCtx = c.getApplicationContext() != null ? c.getApplicationContext() : c;
         try {
             MediaProjectionManager m = (MediaProjectionManager)
                 c.getSystemService(Context.MEDIA_PROJECTION_SERVICE);
@@ -124,24 +153,19 @@ final class Screen {
                 android.util.Log.w("SopScreen", "getMediaProjection 返回 null");
                 return false;
             }
-            DisplayMetrics dm = c.getResources().getDisplayMetrics();
-            int sw = Math.max(1, dm.widthPixels);
-            int sh = Math.max(1, dm.heightPixels);
-            outW = Math.min(maxW <= 0 ? 720 : maxW, sw);
-            outW &= ~1;                                  // 偶数：编码器与部分 GPU 都更省事
-            outH = Math.max(2, Math.round((float) sh * outW / sw)) & ~1;
-            outDpi = dm.densityDpi;
-
             thread = new HandlerThread("sop-screen");
             thread.start();
             handler = new Handler(thread.getLooper());
 
-            reader = ImageReader.newInstance(outW, outH, PixelFormat.RGBA_8888, 3);
-            reader.setOnImageAvailableListener(listener, handler);
-            display = projection.createVirtualDisplay("sop-screen", outW, outH, outDpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                reader.getSurface(), null, handler);
+            DisplayMetrics dm = c.getResources().getDisplayMetrics();
+            int[] wh = sizeFor(dm.widthPixels, dm.heightPixels, this.maxW);
+            outW = wh[0];
+            outH = wh[1];
+            outDpi = dm.densityDpi;
+
+            openDisplay();
             projection.registerCallback(projectionCb, handler);
+            registerDisplayWatcher();
             running = true;
             this.grantResult = resultCode;
             this.grantData = data;     // 只有真起来了才记：失败留着会骗人
@@ -155,6 +179,87 @@ final class Screen {
             stop();
             return false;
         }
+    }
+
+    /**
+     * 输出尺寸：竖屏按调用方给的宽（默认 720），**横屏抬到 1280**。
+     *
+     * <p>为什么横屏要特殊对待：竖屏 1080×2400 缩到 720 宽还剩 1600 高；横屏 2400×1080
+     * 按同样口径就只剩 324 高 —— 视频字幕、血条、网页正文在这个高度上全部糊成一团。
+     * 横屏本来就是"看细节"的场景（看片、打游戏），所以给到 1280 宽（1280×576），
+     * 拼进宫格后每格像素密度高 3 倍左右。
+     */
+    private static int[] sizeFor(int sw, int sh, int maxW) {
+        int safeW = Math.max(1, sw);
+        int safeH = Math.max(1, sh);
+        int w;
+        if (safeW >= safeH) w = Math.min(Math.max(maxW, 1280), safeW);       // 横屏：至少 1280
+        else w = Math.min(Math.min(maxW <= 0 ? 720 : maxW, 720), safeW);     // 竖屏：硬顶 720
+        w &= ~1;                                                         // 偶数：编码器更省事
+        int h = Math.max(2, Math.round((float) safeH * w / safeW)) & ~1;
+        return new int[] { w, h };
+    }
+
+    /** 建 ImageReader + VirtualDisplay（首次和「转屏重建」共用）。 */
+    private void openDisplay() {
+        reader = ImageReader.newInstance(outW, outH, PixelFormat.RGBA_8888, 3);
+        reader.setOnImageAvailableListener(listener, handler);
+        display = projection.createVirtualDisplay("sop-screen", outW, outH, outDpi,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            reader.getSurface(), null, handler);
+    }
+
+    /**
+     * 盯着「屏幕尺寸/方向变了」。
+     *
+     * <p>虚拟屏是启动那一刻按 {@code DisplayMetrics} 建的，之后不会自己跟着转 ——
+     * 用户横过来看视频时，画面会被塞进竖版画布（压扁或加黑边）。所以这里挂一个
+     * DisplayListener，尺寸一变就用**同一个 `MediaProjection`** 重建 reader + display
+     * （重建不需要重新授权，只有 `stop()` 之后才要）。
+     */
+    private void registerDisplayWatcher() {
+        if (appCtx == null || handler == null) return;
+        try {
+            displayMgr = (DisplayManager) appCtx.getSystemService(Context.DISPLAY_SERVICE);
+            if (displayMgr == null) return;
+            displayListener = new DisplayManager.DisplayListener() {
+                @Override public void onDisplayAdded(int displayId) { }
+                @Override public void onDisplayRemoved(int displayId) { }
+                @Override public void onDisplayChanged(int displayId) {
+                    if (displayId != android.view.Display.DEFAULT_DISPLAY) return;
+                    final Handler h = handler;
+                    if (h == null) return;
+                    h.post(new Runnable() {
+                        @Override public void run() { rebuildForSize(); }
+                    });
+                }
+            };
+            displayMgr.registerDisplayListener(displayListener, handler);
+        } catch (Throwable e) {
+            EyeLog.w(TAG, "注册屏幕尺寸监听失败：" + e);
+        }
+    }
+
+    /**
+     * 尺寸/方向真的变了才处理（同一尺寸的 onDisplayChanged —— 亮度、刷新率 —— 直接忽略）。
+     *
+     * <p>**为什么不原地重建**：Android 14 上把 `MediaProjection` 的 VirtualDisplay 换掉，
+     * 系统会认为这次投射结束了 —— 实测「先释放再建」立刻 `onStop`，「先建再释放」也撑了
+     * 4 秒就 `onStop`。也就是说同一个 token 换不出第二套虚拟屏。
+     *
+     * <p>所以这里干脆停掉采集，交给上层提示用户重新点一次「一起看屏幕** ——
+     * 重开时会按新方向建（横屏 1280×576、竖屏 720×1600），横屏才看得清字幕。
+     */
+    private void rebuildForSize() {
+        if (!running || appCtx == null) return;
+        DisplayMetrics dm = appCtx.getResources().getDisplayMetrics();
+        int[] wh = sizeFor(dm.widthPixels, dm.heightPixels, maxW);
+        if (wh[0] == outW && wh[1] == outH) return;
+        EyeLog.w(TAG, "屏幕尺寸变了 " + outW + "x" + outH + " → " + wh[0] + "x" + wh[1]
+            + "：Android 14 换不出第二套虚拟屏，停掉等重新授权");
+        stop();
+        Sink s = sink;
+        if (s != null) s.onScreenSizeChanged(wh[0], wh[1]);
     }
 
     /** 停：释放虚拟屏与读帧器，**不动授权**（下次 `start()` 还能用同一对凭证）。 */
@@ -186,6 +291,14 @@ final class Screen {
         latest = null;
         latestAt = 0;
         lastAt = -1;
+        try {
+            if (displayMgr != null && displayListener != null) {
+                displayMgr.unregisterDisplayListener(displayListener);
+            }
+        } catch (Throwable ignored) { }
+        displayMgr = null;
+        displayListener = null;
+        appCtx = null;
         // token 停了就作废（Android 14 起不能再用），别让 hasGrant() 说谎
         grantData = null;
         grantResult = 0;
@@ -193,9 +306,11 @@ final class Screen {
 
     private final MediaProjection.Callback projectionCb = new MediaProjection.Callback() {
         @Override public void onStop() {
-            // 系统自己收回了（用户点了「停止共享」/ 另一个 App 抢了）：安静地停。
+            // 系统自己收回了（用户点了「停止共享」/ 另一个 App 抢了 / 转屏重建被拒）：安静地停。
             EyeLog.w(TAG, "系统停止投射");
             stop();
+            Sink s = sink;
+            if (s != null) s.onScreenStopped();
         }
     };
 

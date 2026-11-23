@@ -389,6 +389,8 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
 
     /** 用户点了「一起看」但还没授权 → 授权回来后自动接着开（不用再点一次）。 */
     private volatile boolean screenWanted;
+    /** 屏幕当前是否处于「录出来是黑的」状态（用来把重复提示压成一次）。 */
+    private volatile boolean screenBlocked;
 
     /** 单次 `look_screen` 刚刚拿到的那张（{@link Asker} 会把它挂到下一条 user 消息上）。 */
     private volatile Tools.Look lastScreen;
@@ -471,8 +473,46 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
     boolean companionOn() { return callActive && "screen".equals(callSource); }
 
     private final Screen.Sink screenSink = new Screen.Sink() {
-        @Override public void onScreenJpeg(byte[] jpg) { onScreenFrame(jpg); }
+        @Override public void onScreenJpeg(byte[] jpg) {
+            screenBlocked = false;      // 画面回来了，下次变黑可以再提示一次
+            onScreenFrame(jpg);
+        }
+        @Override public void onScreenSizeChanged(final int newW, final int newH) {
+            /**
+             * 转屏：采集已经停了（Android 14 换不出第二套虚拟屏），这里把"正在看"收掉并
+             * 用气泡告诉用户点一下重开 —— 重开会按新方向建，横屏才看得清字幕/UI。
+             */
+            ui.post(new Runnable() {
+                @Override public void run() {
+                    if (companionOn()) stopCompanion();
+                    bubbleToast("屏幕转成 " + newW + "×" + newH
+                        + " 了，点一下「一起看屏幕」重新授权，横屏才清楚");
+                }
+            });
+        }
+
+        @Override public void onScreenStopped() {
+            /**
+             * 系统收回投射时把"正在看"也收掉：否则 `/status` 显示 companion=true，
+             * 实际一帧都不会再来了（用户会以为它还在陪）。
+             */
+            ui.post(new Runnable() {
+                @Override public void run() {
+                    if (companionOn()) {
+                        stopCompanion();
+                        bubbleToast("屏幕投射被系统停了，要再点一次「一起看屏幕」");
+                    }
+                }
+            });
+        }
         @Override public void onScreenBlocked() {
+            /**
+             * `FLAG_SECURE` 时 `looksBlank` 是**每帧**命中的（5fps），原来这里每帧都
+             * `onError` 一次 —— 聊天里会被"没答上：这块屏幕不让录"刷屏，还反复
+             * `endRound()`。改成「一次会话里只提示一次，画面恢复后才重置」。
+             */
+            if (screenBlocked) return;
+            screenBlocked = true;
             Ui u = uiSink;
             if (u != null) u.onError("这块屏幕不让录（银行/密码这类界面），先切走再一起看。");
         }
@@ -614,20 +654,30 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
 
     @Override public Tools.Look lastScreen() { return lastScreen; }
 
+    /**
+     * 挂悬浮球。**必须在主线程**：`WindowManager.addView` 里会 `new Handler()`，
+     * 在 HTTP 线程（`dsh-eye-conn`）上直接调会抛
+     * `RuntimeException: Can't create handler inside thread ... that has not called Looper.prepare()`
+     * —— 表现就是"点了 /companion 但球没出来"。
+     */
     private void bubbleShow() {
-        if (bubble == null) {
-            bubble = new BubbleWindow(this, new BubbleWindow.Cb() {
-                @Override public void onToggle() {
-                    if (companionOn()) stopCompanion();
-                    else startCompanion("screen");
+        ui.post(new Runnable() {
+            @Override public void run() {
+                if (bubble == null) {
+                    bubble = new BubbleWindow(EyeService.this, new BubbleWindow.Cb() {
+                        @Override public void onToggle() {
+                            if (companionOn()) stopCompanion();
+                            else startCompanion("screen");
+                        }
+                        @Override public void onClose() {
+                            stopCompanion();
+                            if (bubble != null) bubble.hide();
+                        }
+                    });
                 }
-                @Override public void onClose() {
-                    stopCompanion();
-                    if (bubble != null) bubble.hide();
-                }
-            });
-        }
-        bubble.show();
+                bubble.show();
+            }
+        });
     }
 
     /**
