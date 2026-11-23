@@ -477,6 +477,20 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
             screenBlocked = false;      // 画面回来了，下次变黑可以再提示一次
             onScreenFrame(jpg);
         }
+        @Override public void onScreenSizeChanged(final int newW, final int newH) {
+            /**
+             * 转屏：采集已经停了（竖屏画布塞横屏内容会被裁两边）。这里**自动重开** ——
+             * `startCompanion` 发现没有活着的采集会自己拉起系统授权弹窗，用户点一下
+             * 「开始录制」就按新方向建（横屏 1280×576）。
+             */
+            ui.post(new Runnable() {
+                @Override public void run() {
+                    if (!callActive) return;          // 用户已经关了，别硬开
+                    EyeLog.w("screen", "转屏 → 重新要授权（" + newW + "x" + newH + "）");
+                    startCompanion("screen");
+                }
+            });
+        }
         @Override public void onScreenStopped() {
             /**
              * 系统收回投射时把"正在看"也收掉：否则 `/status` 显示 companion=true，

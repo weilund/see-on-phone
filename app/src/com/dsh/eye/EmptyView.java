@@ -31,6 +31,8 @@ final class EmptyView extends LinearLayout {
 
     interface Cb {
         void onSuggest(String label);
+        /** 点「一起看屏幕」：直接开启陪看（不是填进输入框）。 */
+        void onCompanion();
     }
 
     EmptyView(Activity a, final Cb cb) {
@@ -61,6 +63,27 @@ final class EmptyView extends LinearLayout {
         tag.setGravity(Gravity.CENTER);
         tag.setPadding(0, 0, 0, dp(Theme.S5));
         addView(tag);
+
+        // 功能入口（点一下**直接开**）：放在话术模板前面，这是这一版最想让人点的那个
+        TextView comp = new TextView(a);
+        comp.setText("◉  一起看屏幕");
+        comp.setTextSize(Theme.T_SUB + 1);
+        comp.setTextColor(Theme.ACCENT);
+        comp.setGravity(Gravity.CENTER);
+        comp.setSingleLine(true);
+        comp.setPadding(dp(Theme.S5), dp(11), dp(Theme.S5), dp(11));
+        comp.setBackground(Theme.pillStroke(Theme.SURFACE_2, Theme.ACCENT, dp(1)));
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        clp.topMargin = dp(Theme.S2);
+        comp.setLayoutParams(clp);
+        comp.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                if (cb != null) cb.onCompanion();
+            }
+        });
+        Anim.press(comp);
+        addView(comp);
 
         String[] asks = { "看一眼我桌上有什么", "这个多少钱", "帮我记一件事" };
         for (final String ask : asks) {

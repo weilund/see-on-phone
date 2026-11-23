@@ -494,6 +494,13 @@ public class MainActivity extends AppActivity implements EyeService.Ui, Bubbles.
                 bar.setText(label);
                 bar.focus();
             }
+            public void onCompanion() {
+                EyeService s = EyeService.peek();
+                if (s == null) { toast("服务还没起来，等一下再点"); return; }
+                if (s.companionOn()) { s.stopCompanion(); toast("不看屏幕了"); return; }
+                // 没授权时它会自己拉起系统那个「开始录制」弹窗
+                if (!s.startCompanion("screen")) toast("点一下系统弹窗里的「开始录制」");
+            }
         }), new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
     }

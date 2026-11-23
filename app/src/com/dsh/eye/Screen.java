@@ -74,6 +74,11 @@ final class Screen {
          * 实现方要把"正在看"的状态也收掉，否则界面显示在看、实际早就没帧了。
          */
         default void onScreenStopped() { }
+        /**
+         * 屏幕尺寸/方向变了：采集已经停掉，**上层应该立刻重新要一次授权**（会弹系统弹窗）。
+         * 重开时按新方向建 —— 横屏 1280×576，这样画面是完整的，而不是竖屏画布里被裁掉两边。
+         */
+        default void onScreenSizeChanged(int newW, int newH) { }
     }
 
     private static final String TAG = "screen";
@@ -255,8 +260,16 @@ final class Screen {
         DisplayMetrics dm = appCtx.getResources().getDisplayMetrics();
         int[] wh = sizeFor(dm.widthPixels, dm.heightPixels, maxW);
         if (wh[0] == outW && wh[1] == outH) return;
-        EyeLog.w(TAG, "屏幕变成 " + wh[0] + "x" + wh[1] + "，保持原虚拟屏 " + outW + "x" + outH
-            + "（重建会中断陪伴；想更清楚就重开一次「一起看屏幕」）");
+        /**
+         * 方向变了：竖屏画布塞横屏内容只会被裁掉两边（真机实测：宫格里"只有中间部分"）。
+         * Android 14 又不许同一个凭证换第二套虚拟屏，所以只能**停下来重新要授权** ——
+         * 上层会立刻拉起系统弹窗，用户点一下「开始录制」就按新方向建（横屏 1280×576）。
+         */
+        EyeLog.w(TAG, "屏幕变成 " + wh[0] + "x" + wh[1] + "（原 " + outW + "x" + outH
+            + "）：停采集，等上层重新授权后按新方向建");
+        stop();
+        Sink s = sink;
+        if (s != null) s.onScreenSizeChanged(wh[0], wh[1]);
     }
 
     /** 停：释放虚拟屏与读帧器，**不动授权**（下次 `start()` 还能用同一对凭证）。 */

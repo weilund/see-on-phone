@@ -165,7 +165,7 @@ final class Config {
      * ⚠️ 这里没有读 `BuildConfig.version()`：`Brain` 是纯静态工具，拿不到 context。
      * 发版时跟着 `AndroidManifest.xml` 的 versionName 一起改（两处，注释互相提醒）。
      */
-    static final String UA = "SeeOnPhone/2.7.6 (+https://github.com/weilund/see-on-phone)";
+    static final String UA = "SeeOnPhone/2.7.7 (+https://github.com/weilund/see-on-phone)";
 
     static final String DEFAULT_VOICE = "";
 
