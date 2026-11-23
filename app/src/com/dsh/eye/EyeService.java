@@ -477,20 +477,6 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
             screenBlocked = false;      // 画面回来了，下次变黑可以再提示一次
             onScreenFrame(jpg);
         }
-        @Override public void onScreenSizeChanged(final int newW, final int newH) {
-            /**
-             * 转屏：采集已经停了（Android 14 换不出第二套虚拟屏），这里把"正在看"收掉并
-             * 用气泡告诉用户点一下重开 —— 重开会按新方向建，横屏才看得清字幕/UI。
-             */
-            ui.post(new Runnable() {
-                @Override public void run() {
-                    if (companionOn()) stopCompanion();
-                    bubbleToast("屏幕转成 " + newW + "×" + newH
-                        + " 了，点一下「一起看屏幕」重新授权，横屏才清楚");
-                }
-            });
-        }
-
         @Override public void onScreenStopped() {
             /**
              * 系统收回投射时把"正在看"也收掉：否则 `/status` 显示 companion=true，

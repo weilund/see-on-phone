@@ -34,9 +34,9 @@ import java.nio.ByteBuffer;
  *
  * 虚拟屏是启动那一刻按 `DisplayMetrics` 建的，**不会自己跟着转**：
 
- * 转屏/分屏/改分辨率时，**不能**用同一个 token 原地重建虚拟屏（Android 14 会把
- * 「换 display」当成投射结束，实测必定 `onStop`）。所以 {@link #rebuildForSize()}
- * 选择停掉采集并通知上层重新授权；重开时按新方向建：
+ * 转屏/分屏/改分辨率时**不重建**（Android 14 上换虚拟屏会被系统判成投射结束，
+ * 打断陪伴还得重新授权）：保持原虚拟屏，系统会把横屏画面按比例缩到画布中间，
+ * 陪伴不中断。想要"横屏也清楚"，重开一次「一起看屏幕」，那时按当前方向建：
  *
  * - 横屏输出抬到 1280 宽（竖屏仍是 720）—— 横屏本来就矮，压到 324 高就全糊了。
  *
@@ -70,11 +70,6 @@ final class Screen {
          * 实现方要把"正在看"的状态也收掉，否则界面显示在看、实际早就没帧了。
          */
         default void onScreenStopped() { }
-        /**
-         * 屏幕尺寸/方向变了，而采集**没法原地跟着变**（Android 14 上重建虚拟屏会被系统
-         * 判成「投射结束」，实测 4 秒后必定 `onStop`）。所以采集已经停掉，等上层重新授权。
-         */
-        default void onScreenSizeChanged(int newW, int newH) { }
     }
 
     private static final String TAG = "screen";
@@ -241,25 +236,23 @@ final class Screen {
     }
 
     /**
-     * 尺寸/方向真的变了才处理（同一尺寸的 onDisplayChanged —— 亮度、刷新率 —— 直接忽略）。
+     * 尺寸/方向真的变了 —— **只记一笔，不动采集**。
      *
-     * <p>**为什么不原地重建**：Android 14 上把 `MediaProjection` 的 VirtualDisplay 换掉，
-     * 系统会认为这次投射结束了 —— 实测「先释放再建」立刻 `onStop`，「先建再释放」也撑了
-     * 4 秒就 `onStop`。也就是说同一个 token 换不出第二套虚拟屏。
+     * <p>Android 14 上同一个 token 换不出第二套虚拟屏（先释放/先建都实测会 `onStop`），
+     * 硬要重建就等于把陪伴打断、还得让用户重新授权。所以这里选择**保持原虚拟屏**：
+     * 横屏时系统会把横屏画面按比例缩到画布中间（上下黑边），字会小一点，但陪伴不断、
+     * 不用重新点授权。
      *
-     * <p>所以这里干脆停掉采集，交给上层提示用户重新点一次「一起看屏幕** ——
-     * 重开时会按新方向建（横屏 1280×576、竖屏 720×1600），横屏才看得清字幕。
+     * <p>用户想要"横屏也清楚"时，重开一次「一起看屏幕」即可 —— 那时会按当前方向建
+     * （横屏 1280×576）。
      */
     private void rebuildForSize() {
         if (!running || appCtx == null) return;
         DisplayMetrics dm = appCtx.getResources().getDisplayMetrics();
         int[] wh = sizeFor(dm.widthPixels, dm.heightPixels, maxW);
         if (wh[0] == outW && wh[1] == outH) return;
-        EyeLog.w(TAG, "屏幕尺寸变了 " + outW + "x" + outH + " → " + wh[0] + "x" + wh[1]
-            + "：Android 14 换不出第二套虚拟屏，停掉等重新授权");
-        stop();
-        Sink s = sink;
-        if (s != null) s.onScreenSizeChanged(wh[0], wh[1]);
+        EyeLog.w(TAG, "屏幕变成 " + wh[0] + "x" + wh[1] + "，保持原虚拟屏 " + outW + "x" + outH
+            + "（重建会中断陪伴；想更清楚就重开一次「一起看屏幕」）");
     }
 
     /** 停：释放虚拟屏与读帧器，**不动授权**（下次 `start()` 还能用同一对凭证）。 */
