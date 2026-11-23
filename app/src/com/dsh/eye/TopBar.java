@@ -19,6 +19,8 @@ final class TopBar extends LinearLayout {
 
     interface Cb {
         void onMenu();
+        /** 点"眼睛"：开/关陪看屏幕。 */
+        void onScreen();
         void onVideo();
         void onGear();
         void onSpeak();
@@ -78,6 +80,9 @@ final class TopBar extends LinearLayout {
             public void run() { if (cb != null) cb.onSpeak(); }
         }), new LinearLayout.LayoutParams(dp(40), dp(40)));
 
+        addView(iconBtn(a, "eye", new Runnable() {
+            public void run() { if (cb != null) cb.onScreen(); }
+        }));
         addView(iconBtn(a, "video", new Runnable() {
             public void run() { if (cb != null) cb.onVideo(); }
         }), new LinearLayout.LayoutParams(dp(40), dp(40)));

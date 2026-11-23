@@ -355,6 +355,7 @@ public class MainActivity extends AppActivity implements EyeService.Ui, Bubbles.
 
         topBar = new TopBar(this, new TopBar.Cb() {
             public void onMenu() { openConvList(); }
+            public void onScreen() { toggleCompanion(); }
             public void onVideo() { openCall(); }
             public void onGear() { openSettings(); }
             public void onSpeak() { toggleSpeak(); }
@@ -494,15 +495,18 @@ public class MainActivity extends AppActivity implements EyeService.Ui, Bubbles.
                 bar.setText(label);
                 bar.focus();
             }
-            public void onCompanion() {
-                EyeService s = EyeService.peek();
-                if (s == null) { toast("服务还没起来，等一下再点"); return; }
-                if (s.companionOn()) { s.stopCompanion(); toast("不看屏幕了"); return; }
-                // 没授权时它会自己拉起系统那个「开始录制」弹窗
-                if (!s.startCompanion("screen")) toast("点一下系统弹窗里的「开始录制」");
-            }
+            public void onCompanion() { toggleCompanion(); }
         }), new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    }
+
+    /** 首页那行「一起看屏幕」和顶栏"眼睛"共用一个开关。 */
+    private void toggleCompanion() {
+        EyeService s = EyeService.peek();
+        if (s == null) { toast("服务还没起来，等一下再点"); return; }
+        if (s.companionOn()) { s.stopCompanion(); toast("不看屏幕了"); return; }
+        // 没授权时它会自己拉起系统那个「开始录制」弹窗
+        if (!s.startCompanion("screen")) toast("点一下系统弹窗里的「开始录制」");
     }
 
     private void clearEmpty() {
