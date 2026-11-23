@@ -123,7 +123,17 @@ final class Sheet {
                     continue;
                 }
                 Rect dst = new Rect(r.px, r.py, r.px + cw, r.py + ch);
-                c.drawBitmap(bmp, coverSrc(bmp, dst), dst, fill);
+                if (bmp.getWidth() > bmp.getHeight() * 1.15f) {
+                    /**
+                     * **宽画面（横屏/视频）不裁边**：格子接近 1.5:1，横屏帧是 2.2:1，
+                     * cover 会切掉左右两边 —— 真机上用户看到的就是"只剩中间一截"。
+                     * 这里改成整体缩进格子（上下补底色），完整显示。
+                     */
+                    c.drawRect(dst, pad);
+                    c.drawBitmap(bmp, null, fitSrc(bmp, dst), fill);
+                } else {
+                    c.drawBitmap(bmp, coverSrc(bmp, dst), dst, fill);
+                }
                 bmp.recycle();
                 drawn += 1;
             }
@@ -231,6 +241,17 @@ final class Sheet {
     }
 
     /** 居中裁切（source 跟格子同比例时就是整幅缩放，不裁）。 */
+    /** 保持比例整体塞进格子（letterbox，不裁）。横屏帧用它。 */
+    private static Rect fitSrc(Bitmap bmp, Rect dst) {
+        float s = Math.min(dst.width() / (float) bmp.getWidth(),
+                           dst.height() / (float) bmp.getHeight());
+        int w = Math.max(1, Math.round(bmp.getWidth() * s));
+        int h = Math.max(1, Math.round(bmp.getHeight() * s));
+        int x = dst.left + (dst.width() - w) / 2;
+        int y = dst.top + (dst.height() - h) / 2;
+        return new Rect(x, y, x + w, y + h);
+    }
+
     private static Rect coverSrc(Bitmap bmp, Rect dst) {
         float srcAspect = bmp.getWidth() / (float) bmp.getHeight();
         if (srcAspect > dst.width() / (float) dst.height()) {

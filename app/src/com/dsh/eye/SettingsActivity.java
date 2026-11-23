@@ -298,7 +298,12 @@ public class SettingsActivity extends AppActivity {
     private String companionSub() {
         EyeService s = EyeService.peek();
         if (s == null) return "服务没起来";
-        if (s.companionOn()) return "正看着；点一下停（下次要重新授权）";
+        if (s.companionOn()) {
+            int w = s.screenW();
+            int h = s.screenH();
+            return (w > 0 && h > 0 ? "正看着 " + w + "×" + h + "；" : "正看着；")
+                + "点一下停（下次要重新授权）";
+        }
         if (s.screenGranted()) return "屏幕采集开着；点一下接管";
         return "它就能跟你一起看视频、打游戏";
     }

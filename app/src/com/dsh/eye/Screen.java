@@ -7,6 +7,7 @@ import android.graphics.Canvas;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
+import android.graphics.Point;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
 import android.media.Image;
@@ -17,6 +18,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.SystemClock;
 import android.util.DisplayMetrics;
+import android.view.Display;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
@@ -162,7 +164,8 @@ final class Screen {
             handler = new Handler(thread.getLooper());
 
             DisplayMetrics dm = c.getResources().getDisplayMetrics();
-            int[] wh = sizeFor(dm.widthPixels, dm.heightPixels, this.maxW);
+            int[] real = realSize(c);
+            int[] wh = sizeFor(real[0], real[1], this.maxW);
             outW = wh[0];
             outH = wh[1];
             outDpi = dm.densityDpi;
@@ -257,8 +260,8 @@ final class Screen {
      */
     private void rebuildForSize() {
         if (!running || appCtx == null) return;
-        DisplayMetrics dm = appCtx.getResources().getDisplayMetrics();
-        int[] wh = sizeFor(dm.widthPixels, dm.heightPixels, maxW);
+        int[] real = realSize(appCtx);
+        int[] wh = sizeFor(real[0], real[1], maxW);
         if (wh[0] == outW && wh[1] == outH) return;
         /**
          * 方向变了：竖屏画布塞横屏内容只会被裁掉两边（真机实测：宫格里"只有中间部分"）。
@@ -375,8 +378,31 @@ final class Screen {
     private boolean landscape() {
         Context c = appCtx;
         if (c == null) return false;
-        DisplayMetrics dm = c.getResources().getDisplayMetrics();
-        return dm.widthPixels > dm.heightPixels;
+        int[] wh = realSize(c);
+        return wh[0] > wh[1];
+    }
+
+    /**
+     * 当前方向下的真实屏幕尺寸。
+     *
+     * <p>**不要用 `Resources.getDisplayMetrics()`**：转屏后它可能还是上一个方向的值
+     * （真机上实测：重授权之后仍然按竖屏建了 720×1600，画面就只剩中间一条）。
+     * `Display.getRealSize()` 跟着 `DisplayListener` 走，转屏后立刻是横屏尺寸。
+     */
+    private static int[] realSize(Context c) {
+        try {
+            DisplayManager dm = (DisplayManager) c.getSystemService(Context.DISPLAY_SERVICE);
+            Display d = dm == null ? null : dm.getDisplay(Display.DEFAULT_DISPLAY);
+            if (d != null) {
+                Point p = new Point();
+                d.getRealSize(p);
+                if (p.x > 0 && p.y > 0) return new int[] { p.x, p.y };
+            }
+        } catch (Throwable ignored) {
+            // 拿不到就退回 DisplayMetrics（老设备/奇怪的分屏）
+        }
+        DisplayMetrics m = c.getResources().getDisplayMetrics();
+        return new int[] { m.widthPixels, m.heightPixels };
     }
 
     /**

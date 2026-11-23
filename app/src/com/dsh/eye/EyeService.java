@@ -615,6 +615,11 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
     /** 设置页要用：现在手里有没有一张「录屏授权」（可能还没开始看）。 */
     boolean screenGranted() { return screenSrc.hasGrant(); }
 
+    /** 设置页/排障用：当前屏幕帧的宽高（能判断是不是按横屏建的）。 */
+    int screenW() { return screenSrc.width(); }
+
+    int screenH() { return screenSrc.height(); }
+
     /**
      * 单次看一眼屏幕：**临时开 → 等一帧 → 停**。
      *
