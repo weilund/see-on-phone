@@ -1543,7 +1543,11 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
      */
     private void sendWithSheets(java.util.List<Tools.Look> sheets) {
         Turn t = new Turn();
-        t.text = "（你自己看了一眼画面）有值得说的就一句话说；没变化就只回「嗯」。";
+        // 屏幕模式换成"弹幕口吻"；相机模式（通话页）仍然是"看到了什么、怎么变的"
+        boolean scrTurn = "screen".equals(callSource);
+        t.text = scrTurn
+            ? "（陪看中，说一句弹幕）"
+            : "（你自己看了一眼画面）有值得说的就一句话说；没变化就只回「嗯」。";
         t.shots = sheets;
         t.attach = true;
         /**
@@ -1557,14 +1561,18 @@ public class EyeService extends Service implements CameraEngine.Sink, HttpServer
          * （那会去开相机、把两路画面搅在一起），也别让它调 look_screen
          * （会把虚拟屏推倒重来，Android 14 上等于让它重新要一次授权）。
          */
-        boolean scr = "screen".equals(callSource);
-        String what = scr ? "手机**屏幕**" : "手机摄像头";
-        String lookTip = scr ? "不要调用任何看图的工具。" : "不要调用 look 工具。";
-        t.note = sheets.size() == 1
-            ? "这是" + what + "**刚才这一会儿**看到的画面（按时间先后拼成一张图）。" + lookTip
-            : "这是" + what + "**刚才这几段时间**看到的 " + sheets.size()
-                + " 段连续画面（各拼成一张图，按时间先后；几张之间也是先后顺序）。" + lookTip;
-        if (scr) t.note += "就当自己坐在旁边一起看。";
+        boolean scr = scrTurn;
+        if (scr) {
+            // 陪伴模式：整段话术交给 COMPANION_STYLE（弹幕口吻 + 不许转播画面）
+            t.note = Asker.COMPANION_STYLE;
+        } else {
+            t.note = sheets.size() == 1
+                ? "这是手机摄像头**刚才这一会儿**看到的画面（按时间先后拼成一张图）。"
+                    + "不要调用 look 工具。"
+                : "这是手机摄像头**刚才这几段时间**看到的 " + sheets.size()
+                    + " 段连续画面（各拼成一张图，按时间先后；几张之间也是先后顺序）。"
+                    + "不要调用 look 工具。";
+        }
         send(t);
     }
 
